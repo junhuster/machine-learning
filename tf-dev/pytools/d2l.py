@@ -127,3 +127,72 @@ def load_data_fashion_mnist(batch_size, resize=None):
     resize_fn = lambda x,y : (tf.image.resize_with_pad(x, resize, resize) if resize else x,y)
     return (tf.data.Dataset.from_tensor_slices(process(*mi_train)).shuffle(len(mi_train[0])).batch(batch_size).map(resize_fn),
             tf.data.Dataset.from_tensor_slices(process(*mi_test)).batch(batch_size).map(resize_fn))
+
+def train_epoch_ch3(net, train_iter, loss, updater):  #@save
+    """训练模型一个迭代周期（定义见第3章）"""
+    # 训练损失总和、训练准确度总和、样本数
+    metric = Accumulator(3)
+    for X, y in train_iter:
+        # 计算梯度并更新参数
+        with tf.GradientTape() as tape:
+            y_hat = net(X)
+            # Keras内置的损失接受的是（标签，预测），这不同于用户在本书中的实现。
+            # 本书的实现接受（预测，标签），例如我们上面实现的“交叉熵”
+            if isinstance(loss, tf.keras.losses.Loss):
+                l = loss(y, y_hat)
+            else:
+                l = loss(y_hat, y)
+        if isinstance(updater, tf.keras.optimizers.Optimizer):
+            params = net.trainable_variables
+            grads = tape.gradient(l, params)
+            updater.apply_gradients(zip(grads, params))
+        else:
+            updater(X.shape[0], tape.gradient(l, updater.params))
+        # Keras的loss默认返回一个批量的平均损失
+        l_sum = l * float(tf.size(y)) if isinstance(
+            loss, tf.keras.losses.Loss) else tf.reduce_sum(l)
+        metric.add(l_sum, accuracy(y_hat, y), tf.size(y))
+    # 返回训练损失和训练精度
+    return metric[0] / metric[2], metric[1] / metric[2]
+
+def train_ch3(net, train_iter, test_iter, loss, num_epochs, updater):  #@save
+    for epoch in range(num_epochs):
+        train_metrics = train_epoch_ch3(net, train_iter, loss, updater)
+        test_acc = evaluate_accuracy(net, test_iter)
+        train_loss, train_acc = train_metrics
+        print(f'epoch:{epoch}, train_loss:{train_loss:f}, train_auc:{train_acc:f}')
+
+class Updater():  #@save
+    """用小批量随机梯度下降法更新参数"""
+    def __init__(self, params, lr):
+        self.params = params
+        self.lr = lr
+
+    def __call__(self, batch_size, grads):
+        d2l.sgd(self.params, grads, self.lr, batch_size)
+
+def accuracy(y_hat, y):
+    if len(y_hat.shape) > 1 and y_hat.shape[1] > 1:
+        y_hat = tf.argmax(y_hat, axis=1)
+    cmp = tf.cast(y_hat, dtype=y.dtype) == y
+    return float(tf.reduce_sum(tf.cast(cmp, y.dtype)))
+
+class Accumulator:  #@save
+    """在n个变量上累加"""
+    def __init__(self, n):
+        self.data = [0.0] * n
+
+    def add(self, *args):
+        self.data = [a + float(b) for a, b in zip(self.data, args)]
+
+    def reset(self):
+        self.data = [0.0] * len(self.data)
+
+    def __getitem__(self, idx):
+        return self.data[idx]
+
+def evaluate_accuracy(net, data_iter):
+    metric = Accumulator(2)
+    for x,y in data_iter:
+        metric.add(accuracy(net(x), y), len(y))
+    return metric[0] / metric[1]

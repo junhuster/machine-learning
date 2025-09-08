@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import tensorflow as tf
 import random
 import time
+from IPython import display
 
 def set_figsize(figsize=(5.5, 3.5)):  
     plt.rcParams['figure.figsize'] = figsize
@@ -123,7 +124,7 @@ class Timer:  #@save
 
 def load_data_fashion_mnist(batch_size, resize=None):
     mi_train,mi_test = tf.keras.datasets.fashion_mnist.load_data()
-    process = lambda x,y : (tf.expand_dims(x, axis=2)/255, tf.cast(y, dtype='int32'))
+    process = lambda x,y : (tf.expand_dims(x, axis=3)/255, tf.cast(y, dtype='int32'))
     resize_fn = lambda x,y : (tf.image.resize_with_pad(x, resize, resize) if resize else x,y)
     return (tf.data.Dataset.from_tensor_slices(process(*mi_train)).shuffle(len(mi_train[0])).batch(batch_size).map(resize_fn),
             tf.data.Dataset.from_tensor_slices(process(*mi_test)).batch(batch_size).map(resize_fn))
@@ -156,10 +157,13 @@ def train_epoch_ch3(net, train_iter, loss, updater):  #@save
     return metric[0] / metric[2], metric[1] / metric[2]
 
 def train_ch3(net, train_iter, test_iter, loss, num_epochs, updater):  #@save
+    animator = Animator(xlabel='epoch', xlim=[1, num_epochs], ylim=[0.3, 0.9],
+                        legend=['train loss', 'train acc', 'test acc'])
     for epoch in range(num_epochs):
         train_metrics = train_epoch_ch3(net, train_iter, loss, updater)
         test_acc = evaluate_accuracy(net, test_iter)
         train_loss, train_acc = train_metrics
+        animator.add(epoch + 1, train_metrics + (test_acc,))
         print(f'epoch:{epoch}, train_loss:{train_loss:f}, train_auc:{train_acc:f}')
 
 class Updater():  #@save
@@ -196,3 +200,62 @@ def evaluate_accuracy(net, data_iter):
     for x,y in data_iter:
         metric.add(accuracy(net(x), y), len(y))
     return metric[0] / metric[1]
+
+def show_images(imgs, num_rows, num_cols, titles=None, scale=3):  #@save
+    """绘制图像列表"""
+    figsize = (num_cols * scale, num_rows * scale)
+    _, axes = plt.subplots(num_rows, num_cols, figsize=figsize)
+    axes = axes.flatten()
+    for i, (ax, img) in enumerate(zip(axes, imgs)):
+        ax.imshow(img.numpy())
+        ax.axes.get_xaxis().set_visible(False)
+        ax.axes.get_yaxis().set_visible(False)
+        if titles:
+            ax.set_title(titles[i])
+    return axes
+
+class Animator:  #@save
+    """在动画中绘制数据"""
+    def __init__(self, xlabel=None, ylabel=None, legend=None, xlim=None,
+                 ylim=None, xscale='linear', yscale='linear',
+                 fmts=('-', 'm--', 'g-.', 'r:'), nrows=1, ncols=1,
+                 figsize=(3.5, 2.5)):
+        # 增量地绘制多条线
+        if legend is None:
+            legend = []
+        
+        self.fig, self.axes = plt.subplots(nrows, ncols, figsize=figsize)
+        if nrows * ncols == 1:
+            self.axes = [self.axes, ]
+        # 使用lambda函数捕获参数
+        self.config_axes = lambda: set_axes(
+            xlabel, ylabel, xlim, ylim, xscale, yscale, legend)
+        self.X, self.Y, self.fmts = None, None, fmts
+
+    def add(self, x, y):
+        # 向图表中添加多个数据点
+        if not hasattr(y, "__len__"):
+            y = [y]
+        n = len(y)
+        if not hasattr(x, "__len__"):
+            x = [x] * n
+        if not self.X:
+            self.X = [[] for _ in range(n)]
+        if not self.Y:
+            self.Y = [[] for _ in range(n)]
+        for i, (a, b) in enumerate(zip(x, y)):
+            if a is not None and b is not None:
+                self.X[i].append(a)
+                self.Y[i].append(b)
+        self.axes[0].cla()
+        for x, y, fmt in zip(self.X, self.Y, self.fmts):
+            self.axes[0].plot(x, y, fmt)
+        self.config_axes()
+        display.display(self.fig)
+        display.clear_output(wait=True)
+
+def get_fashion_mnist_labels(labels):  #@save
+    """返回Fashion-MNIST数据集的文本标签"""
+    text_labels = ['t-shirt', 'trouser', 'pullover', 'dress', 'coat',
+                   'sandal', 'shirt', 'sneaker', 'bag', 'ankle boot']
+    return [text_labels[int(i)] for i in labels]

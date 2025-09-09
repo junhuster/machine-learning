@@ -173,7 +173,7 @@ class Updater():  #@save
         self.lr = lr
 
     def __call__(self, batch_size, grads):
-        d2l.sgd(self.params, grads, self.lr, batch_size)
+        sgd(self.params, grads, self.lr, batch_size)
 
 def accuracy(y_hat, y):
     if len(y_hat.shape) > 1 and y_hat.shape[1] > 1:
@@ -259,3 +259,11 @@ def get_fashion_mnist_labels(labels):  #@save
     text_labels = ['t-shirt', 'trouser', 'pullover', 'dress', 'coat',
                    'sandal', 'shirt', 'sneaker', 'bag', 'ankle boot']
     return [text_labels[int(i)] for i in labels]
+
+def predict_ch3(net, mi_test, n = 80):
+    for x,y in mi_test:
+        break
+    trues = get_fashion_mnist_labels(y)
+    preds = get_fashion_mnist_labels(tf.argmax(net(x), axis=1))
+    titles = [true + '\n' + pred for true,pred in zip(trues, preds)]
+    show_images(tf.reshape(x[0:n], (n, 28, 28)), 1, 8, titles[0:n])

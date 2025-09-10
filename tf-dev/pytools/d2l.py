@@ -68,6 +68,14 @@ def data_iter(batch_size, features, labels):
         k = indices[j:min(j + batch_size, num)]
         yield tf.gather(features, k), tf.gather(labels, k)
 
+def linreg(X, w, b):  #@save
+    """线性回归模型"""
+    return tf.matmul(X, w) + b
+
+def squared_loss(y_hat, y):  #@save
+    """均方损失"""
+    return (y_hat - tf.reshape(y, y_hat.shape)) ** 2 / 2
+
 #定义优化函数
 def sgd(params, grads, lr, batch_size):
     for param,grad in zip(params, grads):
@@ -201,7 +209,7 @@ def evaluate_accuracy(net, data_iter):
         metric.add(accuracy(net(x), y), len(y))
     return metric[0] / metric[1]
 
-def show_images(imgs, num_rows, num_cols, titles=None, scale=3):  #@save
+def show_images(imgs, num_rows, num_cols, titles=None, scale=2):  #@save
     """绘制图像列表"""
     figsize = (num_cols * scale, num_rows * scale)
     _, axes = plt.subplots(num_rows, num_cols, figsize=figsize)
@@ -267,3 +275,10 @@ def predict_ch3(net, mi_test, n = 80):
     preds = get_fashion_mnist_labels(tf.argmax(net(x), axis=1))
     titles = [true + '\n' + pred for true,pred in zip(trues, preds)]
     show_images(tf.reshape(x[0:n], (n, 28, 28)), 1, 8, titles[0:n])
+
+def evaluate_loss(net, data_iter, loss):
+    metric = Accumulator(2)
+    for x,y in data_iter:
+        l = loss(net(x), y)
+        metric.add(tf.reduce_sum(l), tf.size(y))
+    return metric[0] / metric[1]

@@ -282,3 +282,25 @@ def evaluate_loss(net, data_iter, loss):
         l = loss(net(x), y)
         metric.add(tf.reduce_sum(l), tf.size(y))
     return metric[0] / metric[1]
+
+def corr2d(x, k):
+    height,width = k.shape[0],k.shape[1]
+    y = tf.Variable(tf.zeros((x.shape[0] - height + 1, x.shape[1] - width + 1)))
+    for i in range(y.shape[0]):
+        for j in range(y.shape[1]):
+            y[i,j].assign(tf.reduce_sum(x[i:i + height, j:j+width] * k))
+    return y
+
+def try_gpu(i=0):  #@save
+    """如果存在，则返回gpu(i)，否则返回cpu()"""
+    if len(tf.config.experimental.list_physical_devices('GPU')) >= i + 1:
+        return tf.device(f'/GPU:{i}')
+    return tf.device('/CPU:0')
+
+def try_all_gpus():  #@save
+    """返回所有可用的GPU，如果没有GPU，则返回[cpu(),]"""
+    num_gpus = len(tf.config.experimental.list_physical_devices('GPU'))
+    devices = [tf.device(f'/GPU:{i}') for i in range(num_gpus)]
+    return devices if devices else [tf.device('/CPU:0')]
+
+try_gpu(), try_gpu(10), try_all_gpus()

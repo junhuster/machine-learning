@@ -302,5 +302,3 @@ def try_all_gpus():  #@save
     num_gpus = len(tf.config.experimental.list_physical_devices('GPU'))
     devices = [tf.device(f'/GPU:{i}') for i in range(num_gpus)]
     return devices if devices else [tf.device('/CPU:0')]
-
-try_gpu(), try_gpu(10), try_all_gpus()

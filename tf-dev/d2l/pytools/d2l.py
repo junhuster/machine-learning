@@ -561,7 +561,7 @@ def grad_clipping(grads, theta):
     return new_grads
 
 
-def train_epoch_ch8(net, train_iter, loss, optimizer, user_random_iter, vocab_size):
+def train_epoch_ch8(net, train_iter, loss, optimizer, user_random_iter, vocab_size, kerasV3):
     state, timer = None, Timer()
     metric = Accumulator(2)  
     for X,Y in train_iter:
@@ -571,7 +571,10 @@ def train_epoch_ch8(net, train_iter, loss, optimizer, user_random_iter, vocab_si
             y_hat, state = net(X, state)
             #keras v3下不需要先对Y执行tf.transponse()操作了
             #一开始没去掉之前训练一直不收敛，去掉后，收敛了
-            y = tf.reshape(Y, (-1))
+            if kerasV3:
+                y = tf.reshape(Y, (-1))
+            else:
+                y = tf.reshape(tf.transpose(Y), (-1))
             l = loss(y, y_hat)
         params = net.trainable_variables
         grads = g.gradient(l, params)
@@ -582,7 +585,7 @@ def train_epoch_ch8(net, train_iter, loss, optimizer, user_random_iter, vocab_si
 
 #@save
 def train_ch8(net, train_iter, vocab, lr, num_epochs, strategy,
-              use_random_iter=False):
+              use_random_iter=False, kerasV3 = False):
     """训练模型（定义见第8章）"""
     with strategy.scope():
         loss = tf.keras.losses.SparseCategoricalCrossentropy(
@@ -594,7 +597,7 @@ def train_ch8(net, train_iter, vocab, lr, num_epochs, strategy,
     # 训练和预测
     for epoch in range(num_epochs):
         ppl, speed = train_epoch_ch8(net, train_iter, loss, updater,
-                                     use_random_iter, len(vocab))
+                                     use_random_iter, len(vocab), kerasV3)
         if (epoch + 1) % 10 == 0:
             print(predict('time traveller'))
             animator.add(epoch + 1, [ppl])
@@ -603,5 +606,18 @@ def train_ch8(net, train_iter, vocab, lr, num_epochs, strategy,
     print(predict('time traveller '))
     print(predict('traveller '))
 
+class RNNModelScratch:
+    def __init__(self, vocab_size, num_hiddens, init_state, forward_fn, get_params):
+        self.vocab_size, self.num_hiddens = vocab_size, num_hiddens
+        self.init_state, self.forward_fn = init_state, forward_fn
+        self.trainable_variables = get_params(vocab_size, num_hiddens)
+        #
+    def __call__(self, X, state):
+        input = tf.one_hot(tf.transpose(X), self.vocab_size)
+        input = tf.cast(input, dtype=tf.float32)
+        return self.forward_fn(input, state, self.trainable_variables)
+
+    def begin_state(self, batch_size):
+        return self.init_state(batch_size, self.num_hiddens)
 
 ###################rnn end########################

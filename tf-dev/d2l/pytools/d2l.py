@@ -555,6 +555,7 @@ def grad_clipping(grads, theta):
         theta_f = norm
     else:
         theta_f = theta / norm
+        
     #if theta_f > 0.1:
     #    theta_f = theta_f * 0.1
     ##test
@@ -562,6 +563,7 @@ def grad_clipping(grads, theta):
     ##test
     for i,grad in enumerate(new_grads):
         new_grads[i] = grad * theta_f
+        #print(f'grad:{grad}')
     return new_grads
 
 

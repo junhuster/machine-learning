@@ -633,7 +633,7 @@ class RNNModel(tf.keras.layers.Layer):
         self.rnn = rnn_layer
         self.vocab_size = vocab_size
         self.dense = tf.keras.layers.Dense(vocab_size)
-
+    
     def call(self, inputs, state):
         X = tf.one_hot(inputs, self.vocab_size)
         # rnn返回两个以上的值

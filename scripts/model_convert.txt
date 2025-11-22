@@ -1,1 +1,0 @@
-python3.10 -m tf2onnx.convert --saved-model /home/ubuntu/work/data/nin-net/saved_model --output  /home/ubuntu/work/data/nin-net/onnx/model.onnx --inputs serving_default_nin_model_input_zj:0[-1,224,224,1]

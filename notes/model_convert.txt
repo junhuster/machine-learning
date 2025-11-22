@@ -1,0 +1,5 @@
+python3.10 -m tf2onnx.convert --saved-model /home/ubuntu/work/data/nin-net/saved_model --output  /home/ubuntu/work/data/nin-net/onnx/model.onnx --inputs nin_model_input_zj:0[-1,224,224,1]
+python3.10 -m tf2onnx.convert --saved-model /home/ubuntu/work/data/gnet/saved_model --output  /home/ubuntu/work/data/gnet/model.onnx --inputs keras_tensor_111:0[-1,96,96,1]
+
+/usr/local/trt/bin/trtexec  --onnx=/home/ubuntu/work/data/gnet/model.onnx  --minShapes=keras_tensor_111:0:128x96x96x1 --optShapes=keras_tensor_111:0:128x96x96x1 --maxShapes=keras_tensor_111:0:128x96x96x1 --saveEngine=/home/ubuntu/work/data/gnet/model.trt
+/usr/local/trt/bin/trtexec  --loadEngine=/home/ubuntu/work/data/gnet/model.trt --shapes=keras_tensor_111:0:128x96x96x1 --exportOutput=trtexec-result.json

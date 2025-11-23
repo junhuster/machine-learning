@@ -1,5 +1,6 @@
 import tensorflow as tf
-
+smpath = "/home/ubuntu/work/data/gnet/saved_model/"
+smpbtxt = "/home/ubuntu/work/data/gnet/saved_model/gnet.pbtxt"
 def convert_saved_model_to_pbtxt(saved_model_dir, pbtxt_file_path):
     # 加载 SavedModel
     loaded_model = tf.saved_model.load(saved_model_dir)
@@ -15,4 +16,4 @@ def convert_saved_model_to_pbtxt(saved_model_dir, pbtxt_file_path):
     print(f"模型已成功转换为 {pbtxt_file_path}")
 
 # 使用示例
-convert_saved_model_to_pbtxt('../saved_model', 'model.pbtxt')
+convert_saved_model_to_pbtxt(smpath, smpbtxt)

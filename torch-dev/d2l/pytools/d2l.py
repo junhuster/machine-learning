@@ -245,6 +245,22 @@ def set_gpu_device():
     if torch.cuda.is_available():
         print("CUDA 可用，并且显存按需增长已启用。")
 
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+def print_model_parameters(net):
+    total_params = 0
+    print("Layer Name\t\tVariable Name\t\tParameter Count")
+    print("=" * 60)
+    
+    for layer in net.children():  # 使用 children() 确保只迭代子模块
+        # 计算当前层的参数量
+        param_count = sum(p.numel() for p in layer.parameters() if p.requires_grad)
+        total_params += param_count
+        print(layer.__class__.__name__, '\tParameter Count:\t', param_count)
+    print("=" * 60)
+    print(f"总参数量: {total_params}")
+
 def get_tokens_and_segments(tokens_a, tokens_b=None):
     """获取输入序列的词元及其片段索引"""
     tokens = ['<cls>'] + tokens_a + ['<sep>']

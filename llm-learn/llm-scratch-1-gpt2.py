@@ -3,16 +3,75 @@ import torch.nn as nn
 import matplotlib
 import tiktoken
 import torch
+import os
+import gc
 
 GPT_CONFIG_124M = {
     "vocab_size": 50257,    # Vocabulary size
-    "context_length": 1024, # Context length
+    "context_length": 256, # Context length
     "emb_dim": 768,         # Embedding dimension
     "n_heads": 12,          # Number of attention heads
     "n_layers": 12,         # Number of layers
     "drop_rate": 0.1,       # Dropout rate
     "qkv_bias": False       # Query-Key-Value bias
 }
+
+def train_model_simple(model, train_loader, val_loader, optimizer, device, num_epochs,
+                       eval_freq, eval_iter, start_context, tokenizer):
+    # Initialize lists to track losses and tokens seen
+    train_losses, val_losses, track_tokens_seen = [], [], []
+    tokens_seen, global_step = 0, -1
+
+    # Main training loop
+    for epoch in range(num_epochs):
+        model.train()  # Set model to training mode
+        
+        for input_batch, target_batch in train_loader:
+            optimizer.zero_grad() # Reset loss gradients from previous batch iteration
+            loss = calc_loss_batch(input_batch, target_batch, model, device)
+            loss.backward() # Calculate loss gradients
+            optimizer.step() # Update model weights using loss gradients
+            tokens_seen += input_batch.numel()
+            global_step += 1
+            # Optional evaluation step
+            if global_step % eval_freq == 0:
+                train_loss, val_loss = evaluate_model(
+                    model, train_loader, val_loader, device, eval_iter)
+                train_losses.append(train_loss)
+                val_losses.append(val_loss)
+                track_tokens_seen.append(tokens_seen)
+                print(f"Ep {epoch+1} (Step {global_step:06d}): "
+                      f"Train loss {train_loss:.3f}, Val loss {val_loss:.3f}")
+
+        # Print a sample text after each epoch
+        generate_and_print_sample(
+            model, tokenizer, device, start_context
+        )
+
+    return train_losses, val_losses, track_tokens_seen
+
+
+def evaluate_model(model, train_loader, val_loader, device, eval_iter):
+    model.eval()
+    with torch.no_grad():
+        train_loss = calc_loss_loader(train_loader, model, device, num_batches=eval_iter)
+        val_loss = calc_loss_loader(val_loader, model, device, num_batches=eval_iter)
+    model.train()
+    return train_loss, val_loss
+
+
+def generate_and_print_sample(model, tokenizer, device, start_context):
+    model.eval()
+    context_size = model.pos_emb.weight.shape[0]
+    encoded = text_to_token_ids(start_context, tokenizer).to(device)
+    with torch.no_grad():
+        token_ids = generate_text_simple(
+            model=model, idx=encoded,
+            max_new_tokens=50, context_size=context_size
+        )
+        decoded_text = token_ids_to_text(token_ids, tokenizer)
+        print(decoded_text.replace("\n", " "))  # Compact print format
+    model.train()
 
 class GPTModel(nn.Module):
     def __init__(self, cfg):
@@ -197,7 +256,6 @@ def create_dataloader_v1(txt, batch_size=4, max_length=256,
 
     # Create dataset
     dataset = GPTDatasetV1(txt, tokenizer, max_length, stride)
-
     # Create dataloader
     dataloader = DataLoader(
         dataset,
@@ -391,5 +449,63 @@ def text_to_token_ids(text, tokenizer):
     return encoded_tensor
 
 def token_ids_to_text(token_ids, tokenizer):
+    
     flat = token_ids.squeeze(0) # remove batch dimension
     return tokenizer.decode(flat.tolist())
+
+def clear_memory():
+      """清理显存"""
+      gc.collect()
+      torch.cuda.empty_cache()
+
+
+
+if __name__ == "__main__":
+    file_path = "/home/ubuntu/work/data/llm-data/the-verdict.txt"
+    url = "https://raw.githubusercontent.com/rasbt/LLMs-from-scratch/main/ch02/01_main-chapter-code/the-verdict.txt"
+
+    if not os.path.exists(file_path):
+        with urllib.request.urlopen(url) as response:
+            text_data = response.read().decode('utf-8')
+        with open(file_path, "w", encoding="utf-8") as file:
+            file.write(text_data)
+    else:
+        with open(file_path, "r", encoding="utf-8") as file:
+            text_data = file.read()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    train_ratio = 0.90
+    split_idx = int(train_ratio * len(text_data))
+    train_data = text_data[:split_idx]
+    val_data = text_data[split_idx:]
+    tokenizer = tiktoken.get_encoding("gpt2")
+    torch.manual_seed(123)
+
+    train_loader = create_dataloader_v1(
+        train_data,
+        batch_size=2,
+        max_length=GPT_CONFIG_124M["context_length"],
+        stride=GPT_CONFIG_124M["context_length"],
+        drop_last=True,
+        shuffle=True,
+        num_workers=0
+    )
+
+    val_loader = create_dataloader_v1(
+        val_data,
+        batch_size=2,
+        max_length=GPT_CONFIG_124M["context_length"],
+        stride=GPT_CONFIG_124M["context_length"],
+        drop_last=False,
+        shuffle=False,
+        num_workers=0
+    )
+    model = GPTModel(GPT_CONFIG_124M)
+    model.to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.0004, weight_decay=0.1)
+    num_epochs = 10
+    train_losses, val_losses, tokens_seen = train_model_simple(
+        model, train_loader, val_loader, optimizer, device,
+        num_epochs=num_epochs, eval_freq=5, eval_iter=5,
+        start_context="Every effort moves you", tokenizer=tokenizer
+    )
+    clear_memory()

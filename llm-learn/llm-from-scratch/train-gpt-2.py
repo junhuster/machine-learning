@@ -9,6 +9,7 @@ from matplotlib.ticker import MaxNLocator
 sys.path.append(str(Path(__file__).parent.parent))
 import logger
 import gpt_2 as GPT2
+import argparse
 
 start_text = "Every effort moves you"
 train_file_path = "/home/ubuntu/work/data/llm-data/train_data/The-Count-of-Monte-Cristo.txt"
@@ -16,12 +17,12 @@ load_local_model = True
 local_model_path = "/home/ubuntu/work/data/llm-data/local_model/gpt2/model.pth"
 GPT_CONFIG_124M = {
     "vocab_size": 50257,    # Vocabulary size
-    "context_length": 256, # Context length
+    "context_length": 1024, # Context length
     "emb_dim": 768,         # Embedding dimension
     "n_heads": 12,          # Number of attention heads
     "n_layers": 12,         # Number of layers
     "drop_rate": 0.1,       # Dropout rate
-    "qkv_bias": False       # Query-Key-Value bias
+    "qkv_bias": True       # Query-Key-Value bias
 }
 
 def plot_losses(epochs_seen, tokens_seen, train_losses, val_losses):
@@ -45,6 +46,24 @@ def plot_losses(epochs_seen, tokens_seen, train_losses, val_losses):
     plt.show()
 
 if __name__ == "__main__":
+    GPT2.clear_memory()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-ft',
+                        '--fine_tune',
+                        type=int,
+                        required=False,
+                        default=0,
+                        help='train from stratch or from a foundatiton model')
+
+    parser.add_argument('-mpath',
+                        '--model_path',
+                        type=str,
+                        required=False,
+                        default='/home/ubuntu/work/data/llm-data/pretrained_model/gpt2/124M_torch/model.pth',
+                        help='')
+    
+    args = parser.parse_args()
+
     file_path = train_file_path
     #url = "https://raw.githubusercontent.com/rasbt/LLMs-from-scratch/main/ch02/01_main-chapter-code/the-verdict.txt"
 
@@ -83,10 +102,19 @@ if __name__ == "__main__":
         shuffle=False,
         num_workers=0
     )
-    model = GPT2.GPTModel(GPT_CONFIG_124M)
+    if args.fine_tune == 1:
+        print(f"\n train from a foundatiton model")
+        print(f"\n foundatiton model path:{args.model_path}\n")
+        checkpoint = torch.load(args.model_path)
+        model = GPT2.GPTModel(GPT_CONFIG_124M)
+        model.load_state_dict(checkpoint["model_state_dict"])
+    else:
+        print(f"\n train from scratch\n")
+        model = GPT2.GPTModel(GPT_CONFIG_124M)
+    
     model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=0.0001, weight_decay=0.1)
-    num_epochs = 20
+    num_epochs = 10
     train_losses, val_losses, tokens_seen = GPT2.train_model_simple(
         model, train_loader, val_loader, optimizer, device,
         num_epochs=num_epochs, eval_freq=5, eval_iter=5,

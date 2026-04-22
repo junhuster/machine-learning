@@ -482,6 +482,7 @@ def generate_and_print_sample(model, tokenizer, device, start_context):
             max_new_tokens=50, context_size=context_size
         )
         decoded_text = token_ids_to_text(token_ids, tokenizer)
+        log.info("\n")
         log.info(decoded_text.replace("\n", " "))  # Compact print format
     model.train()
     

@@ -12,7 +12,8 @@ import gpt_2 as GPT2
 import argparse
 
 start_text = "Every effort moves you"
-train_file_path = "/home/ubuntu/work/data/llm-data/train_data/The-Count-of-Monte-Cristo.txt"
+start_text1 = "I promised to"
+train_file_path = "/home/ubuntu/work/data/llm-data/train_data/merged_output.txt"
 load_local_model = True
 local_model_path = "/home/ubuntu/work/data/llm-data/local_model/gpt2/model.pth"
 GPT_CONFIG_124M = {
@@ -121,7 +122,10 @@ if __name__ == "__main__":
         start_context= start_text, tokenizer=tokenizer
     )
 
-    epochs_tensor = torch.linspace(0, num_epochs, len(train_losses))
-    plot_losses(epochs_tensor, tokens_seen, train_losses, val_losses)
+    GPT2.generate_and_print_sample(model, tokenizer, device, start_text)
+    GPT2.generate_and_print_sample(model, tokenizer, device, start_text1)
+
+    #epochs_tensor = torch.linspace(0, num_epochs, len(train_losses))
+    #vi plot_losses(epochs_tensor, tokens_seen, train_losses, val_losses)
     GPT2.clear_memory()
 

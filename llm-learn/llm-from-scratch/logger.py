@@ -1,7 +1,7 @@
 import logging as log
 from logging.handlers import TimedRotatingFileHandler
 
-logfile="/home/ubuntu/work/logs/gpt2-train.log"
+logfile="/home/ubuntu/work/logs/gpt2-train.log.merge.ft1"
 handler = TimedRotatingFileHandler(
     filename=logfile,
     when="midnight",      # 每天午夜轮转

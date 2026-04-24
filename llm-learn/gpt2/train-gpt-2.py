@@ -6,8 +6,9 @@ import logging as log
 from pathlib import Path
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
-sys.path.append(str(Path(__file__).parent.parent))
+sys.path.append(str(Path(__file__).parent.parent/'util'))
 import logger
+logger.init_logger("/home/ubuntu/work/logs/gpt2-train.log")
 import gpt_2 as GPT2
 import argparse
 

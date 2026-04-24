@@ -7,9 +7,9 @@ import os
 import gc
 import sys 
 from pathlib import Path
-sys.path.append(str(Path(__file__).parent.parent))
-import logging as log
+sys.path.append(str(Path(__file__).parent.parent/'util'))
 import logger
+import logging as log
 
 def train_model_simple(model, train_loader, val_loader, optimizer, device, num_epochs,
                        eval_freq, eval_iter, start_context, tokenizer):

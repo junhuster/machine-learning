@@ -10,7 +10,7 @@ import argparse
 
 class TextGenerator:
     def __init__(self, 
-                 checkpoint='/home/ubuntu/work/data/llm-data/pretrained_model/llama2/model/base_model_310M/llama2_pretrain_0.2b_300m.pth',  # 模型检查点路径
+                 checkpoint='/home/ubuntu/work/data/llm-data/pretrained_model/llama2/model/8G/pretrain_0.2b_8G.pth',  # 模型检查点路径
                  tokenizer_model_path='/home/ubuntu/work/data/llm-data/pretrained_model/llama2/tokenizer/',  # 分词器模型路径
                  seed=42,  # 随机种子，确保可重复性
                  device=None,  # 设备，优先使用 CUDA，如果没有可用的 CUDA，则使用 CPU
@@ -131,14 +131,14 @@ if __name__ == "__main__":
     print("------------------- Pretrain Sample ------------------- \n")
 
     pretrain_prompt_datas = [
-        '<|im_start|>天上有一朵白云',
-        '<|im_start|>中国矿业大学（北京）地球科学与测绘工程学院',
+        '<|im_start|>你好啊',
+        '<|im_start|>我看见地上有一张100元钱',
     ]
-
-    generator = TextGenerator(checkpoint='/home/ubuntu/work/data/llm-data/pretrained_model/llama2/model/base_model_310M/llama2_pretrain_0.2b_300m.pth')  # 初始化生成器
+    generator = TextGenerator(checkpoint='/home/ubuntu/work/data/llm-data/pretrained_model/llama2/model/8G/pretrain_0.2b_8G.pth')  # 初始化生成器
     for i in range(len(pretrain_prompt_datas)):
         samples = generator.pretrain_sample(start=pretrain_prompt_datas[i], num_samples=1, max_new_tokens=120, temperature=0.75)
-        print(f"\nSample {i+1}:\n{pretrain_prompt_datas[i]}{samples[0]}\n{'-'*20}")  # 打印生成的样本并用分隔线分割
+        print(f"\ninput text{i+1}:\n{pretrain_prompt_datas[i]}")
+        print(f"\nllama2 model output text {i+1}:\n{pretrain_prompt_datas[i]}{samples[0]}\n{'-'*20}")  # 打印生成的样本并用分隔线分割
 
     exit(0)
     print("\n ------------------- SFT Sample ------------------- \n")

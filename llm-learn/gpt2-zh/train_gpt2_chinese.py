@@ -18,21 +18,21 @@ logger.init_logger("/home/ubuntu/work/logs/gpt2-zh-pre-train.log")
 import generate_text as Gtext
 # ===================== 配置区域 =====================
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-TRAIN_JSON_PATH = "/home/ubuntu/work/data/llm-data/train_data/zh/monkey/pretrain_data/monkey_pretrain_train_277M.jsonl"        # 10GB 训练数据
+TRAIN_JSON_PATH = "/home/ubuntu/work/data/llm-data/train_data/zh/monkey/pretrain_data/monkey_pretrain_8G.jsonl"        # 10GB 训练数据
 VAL_JSON_PATH = "/home/ubuntu/work/data/llm-data/train_data/zh/monkey/pretrain_data/monkey_pretrain_val_34M.jsonl"          # 验证集（建议自己切分小文件）
 SAVE_DIR = "/home/ubuntu/work/data/llm-data/pretrained_model/gpt2/124M_zh/"
 VOCAB_SIZE = 10000
 CONTEXT_LENGTH = 256
-SAVE_STEP = 100
+SAVE_STEP = 1000
 NUM_EPOCH = 1
-EVAL_STEP = 100
+EVAL_STEP = 500
 BATCH_SIZE = 32
-LOG_STEP = 50
+LOG_STEP = 100
 # GPT2 配置
 GPT_CONFIG_124M = {
     "vocab_size": VOCAB_SIZE,
     "context_length": CONTEXT_LENGTH,
-    "emb_dim": 512,
+    "emb_dim": 768,
     "n_heads": 8,
     "n_layers": 8,
     "drop_rate": 0.1,
@@ -270,7 +270,7 @@ class StreamingJsonDataset(Dataset):
                 self.line_offsets.append(f.tell())
             self._total_lines = len(self.line_offsets) - 1
 
-        print(f"✅ 数据加载完成：共 {self._total_lines} 条文本，内存占用极低！")
+        log.info(f"✅ 数据加载完成：共 {self._total_lines} 条文本，内存占用极低！")
 
     def __len__(self):
         return self._total_lines
@@ -325,8 +325,8 @@ if __name__ == "__main__":
     total_steps = len(train_loader)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps)
 
-    print(f"✅ 设备：{DEVICE} | 参数量：{sum(p.numel() for p in model.parameters()):,}")
-    print("=" * 80)
+    log.info(f"✅ 设备：{DEVICE} | 参数量：{sum(p.numel() for p in model.parameters()):,}")
+    log.info("=" * 80)
 
     start_text = "我是一个中文语言模型"
     train_losses, val_losses, tokens_seen = train_model_simple(

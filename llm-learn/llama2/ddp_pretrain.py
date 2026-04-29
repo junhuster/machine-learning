@@ -155,18 +155,6 @@ def train_epoch(epoch):
             model.eval()  # 切换到评估模式
             save_model.save_checkpoint(model, args.save_dir, lm_config.dim, lm_config.n_layers, lm_config.vocab_size, step, 2)
             model.train()  # 切换回训练模式
-        
-        # 每20000步保存一个带步数标记的检查点
-        if (step + 1) % 20000 == 0:
-            model.eval()
-            # 构建带步数的检查点文件名
-            ckp = f'{args.save_dir}/pretrain_{lm_config.dim}_{lm_config.n_layers}_{lm_config.vocab_size}_step{step+1}.pth'
-
-            # 保存模型状态字典
-            state_dict = model.module.state_dict() if isinstance(model, torch.nn.DataParallel) else model.state_dict()
-            torch.save(state_dict, ckp)
-            model.train()
-
 
 def init_model():
     """

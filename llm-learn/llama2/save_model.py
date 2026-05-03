@@ -10,7 +10,7 @@ sys.path.append(str(Path(__file__).parent.parent/'util'))
 import logger
 logger.init_logger("/home/ubuntu/work/logs/llama2-pre-train.log")
 
-def save_checkpoint(model, save_dir, dim, n_layers, vocab_size, step, max_checkpoints=3):
+def save_checkpoint(model, save_dir, dim, n_layers, vocab_size, step, max_checkpoints=3, is_pretrain=True):
     """
     保存模型检查点，自动添加 step + 时间后缀，并只保留最新的N个
     """
@@ -21,7 +21,10 @@ def save_checkpoint(model, save_dir, dim, n_layers, vocab_size, step, max_checkp
     time_suffix = time.strftime("%Y%m%d_%H", time.localtime())
     
     # 3. 构建 checkpoint 文件名（加入 step）
-    ckpt_filename = f"pretrain_{dim}_{n_layers}_{vocab_size}_step{step}_{time_suffix}.pth"
+    if is_pretrain == True:
+        ckpt_filename = f"pretrain_{dim}_{n_layers}_{vocab_size}_step{step}_{time_suffix}.pth"
+    else:
+        ckpt_filename = f"sft_{dim}_{n_layers}_{vocab_size}_step{step}_{time_suffix}.pth"
     ckpt_path = os.path.join(save_dir, ckpt_filename)
     
     # 4. 保存模型（多卡兼容）
@@ -30,7 +33,10 @@ def save_checkpoint(model, save_dir, dim, n_layers, vocab_size, step, max_checkp
     log.info(f"✅ 模型已保存：{ckpt_path}")
 
     # 5. 获取同类型检查点，按修改时间排序
-    pattern = os.path.join(save_dir, f"pretrain_{dim}_{n_layers}_{vocab_size}_step*_*.pth")
+    if is_pretrain == True:
+        pattern = os.path.join(save_dir, f"pretrain_{dim}_{n_layers}_{vocab_size}_step*_*.pth")
+    else:
+        pattern = os.path.join(save_dir, f"sft_{dim}_{n_layers}_{vocab_size}_step*_*.pth")
     ckpt_list = sorted(glob.glob(pattern), key=os.path.getmtime)
     
     # 6. 保留最新3个，删除最老的

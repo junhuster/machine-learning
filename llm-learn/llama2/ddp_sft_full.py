@@ -1,4 +1,5 @@
 import os
+import sys
 import platform
 import argparse
 import time
@@ -16,6 +17,12 @@ from k_model import ModelConfig, Transformer
 from dataset import SFTDataset
 
 import swanlab
+import save_model
+import logging as log
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent.parent/'util'))
+import logger
+logger.init_logger("/home/ubuntu/work/logs/llama2-sft-train.log")
 
 # 忽略警告
 warnings.filterwarnings('ignore')
@@ -60,12 +67,13 @@ def train_epoch(epoch):
         lr = get_lr(epoch * iter_per_epoch + step, args.epochs * iter_per_epoch)
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
-
         # 前向传播
         with ctx:
             out = model(X, Y)
             loss = out.last_loss / args.accumulation_steps
             loss_mask = loss_mask.view(-1)
+            #sum0 = loss_mask.sum()
+            #print(f"loss sum:{sum0}")
             loss = torch.sum(loss * loss_mask) / loss_mask.sum()
 
         # 反向传播
@@ -82,9 +90,9 @@ def train_epoch(epoch):
             optimizer.zero_grad(set_to_none=True)
 
         # 打印日志
-        if step % args.log_interval == 0:
+        if (step + 1) % args.log_interval == 0:
             spend_time = time.time() - start_time
-            Logger(
+            log.info(
                 'Epoch:[{}/{}]({}/{}) loss:{:.3f} lr:{:.7f} epoch_Time:{}min:'.format(
                     epoch + 1,
                     args.epochs,
@@ -98,24 +106,13 @@ def train_epoch(epoch):
                     "loss": loss.item() * args.accumulation_steps,
                     "lr": optimizer.param_groups[-1]['lr']
                 })
-
-        # 保存模型
-        if (step + 1) % args.save_interval == 0:
-            model.eval()
-            ckp = f'{args.save_dir}/sft_dim{lm_config.dim}_layers{lm_config.n_layers}_vocab_size{lm_config.vocab_size}.pth'
-
-            # 处理多卡保存
-            state_dict = model.module.state_dict() if isinstance(model, torch.nn.DataParallel) else model.state_dict()
-            torch.save(state_dict, ckp)
-            model.train()
         
         # 定期保存模型
-        if (step + 1) % 20000 == 0:
+        if (step + 1) % args.save_interval == 0:
             model.eval()
             ckp = f'{args.save_dir}/sft_dim{lm_config.dim}_layers{lm_config.n_layers}_vocab_size{lm_config.vocab_size}_step{step+1}.pth'
-
             state_dict = model.module.state_dict() if isinstance(model, torch.nn.DataParallel) else model.state_dict()
-            torch.save(state_dict, ckp)
+            save_model.save_checkpoint(model, args.save_dir, lm_config.dim, lm_config.n_layers, lm_config.vocab_size, step, 2, False)
             model.train()
 
 
@@ -126,13 +123,13 @@ def init_model():
         return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
     # 加载分词器
-    tokenizer = AutoTokenizer.from_pretrained('./tokenizer_k/')
+    tokenizer = AutoTokenizer.from_pretrained('/home/ubuntu/work/data/llm-data/pretrained_model/llama2/tokenizer/')
 
     # 初始化模型
     model = Transformer(lm_config)
 
     # 加载预训练权重
-    ckp = './base_model_215M/pretrain_1024_18_6144.pth'
+    ckp = '/home/ubuntu/work/data/llm-data/pretrained_model/llama2/model/8G/llama2_pretrain_0.2b_8G.pth'
     state_dict = torch.load(ckp, map_location=args.device)
     unwanted_prefix = '_orig_mod.'
     for k, v in list(state_dict.items()):
@@ -143,30 +140,30 @@ def init_model():
     # 多卡初始化
     num_gpus = torch.cuda.device_count()
     if num_gpus > 1:
-        Logger(f"Using {num_gpus} GPUs with DataParallel!")
+        log.info(f"Using {num_gpus} GPUs with DataParallel!")
         model = torch.nn.DataParallel(model)
     
     model = model.to(args.device)
-    Logger(f'LLM总参数量：{count_parameters(model) / 1e6:.3f} 百万')
+    log.info(f'LLM总参数量：{count_parameters(model) / 1e6:.3f} 百万')
     return model, tokenizer
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Tiny-LLM Pretraining")
-    parser.add_argument("--out_dir", type=str, default="sft_model_215M", help="输出目录")
+    parser.add_argument("--out_dir", type=str, default="/home/ubuntu/work/data/llm-data/pretrained_model/llama2/model/8G", help="输出目录")
     parser.add_argument("--epochs", type=int, default=1, help="训练轮数")
-    parser.add_argument("--batch_size", type=int, default=64, help="批处理大小")
+    parser.add_argument("--batch_size", type=int, default=16, help="批处理大小")
     parser.add_argument("--learning_rate", type=float, default=2e-4, help="学习率")
     parser.add_argument("--device", type=str, default="cuda:0" if torch.cuda.is_available() else "cpu", help="使用的设备")
     parser.add_argument("--dtype", type=str, default="bfloat16", help="数据类型")
     parser.add_argument("--use_swanlab", action="store_true", help="是否使用SwanLab进行实验跟踪")
     parser.add_argument("--num_workers", type=int, default=8, help="数据加载的工作进程数")
-    parser.add_argument("--data_path", type=str, default="./BelleGroup_sft.jsonl", help="训练数据路径")
+    parser.add_argument("--data_path", type=str, default="/home/ubuntu/work/data/llm-data/train_data/zh/monkey/sft_data/BelleGroup_sft.jsonl", help="训练数据路径")
     parser.add_argument("--accumulation_steps", type=int, default=8, help="梯度累积步数")
     parser.add_argument("--grad_clip", type=float, default=1.0, help="梯度裁剪阈值")
     parser.add_argument("--warmup_iters", type=int, default=0, help="预热迭代次数")
     parser.add_argument("--log_interval", type=int, default=100, help="日志记录间隔")
-    parser.add_argument("--save_interval", type=int, default=1000, help="模型保存间隔")
+    parser.add_argument("--save_interval", type=int, default=2000, help="模型保存间隔")
     # 添加多卡参数
     parser.add_argument("--gpus", type=str, default='0,1,2,3,4,5,6,7', help="逗号分隔的GPU ID (例如 '0,1,2')")
 
@@ -192,7 +189,8 @@ if __name__ == "__main__":
     # 模型配置
     lm_config = ModelConfig(
         dim=1024,
-        n_layers=18,
+        n_layers=16,
+        max_seq_len=512,
     )
     max_seq_len = lm_config.max_seq_len
     args.save_dir = os.path.join(args.out_dir)

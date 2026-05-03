@@ -7,7 +7,7 @@ os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # 完全禁用 TF 日志
 # ===================== 配置 =====================
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-MODEL_PATH = "/home/ubuntu/work/data/llm-data/pretrained_model/gpt2/124M_zh/gpt2_pretrain_test.pth"
+MODEL_PATH = "/home/ubuntu/work/data/llm-data/pretrained_model/gpt2/124M_zh/gpt2_zh_pretrain_700M_8G.pth"
 
 # ===================== 加载模型 =====================
 def load_model(model_path):
@@ -22,8 +22,8 @@ def load_model(model_path):
 # ===================== 主程序 =====================
 if __name__ == "__main__":
     start_list = [
-        "我是一个中文语言模型",
-        "今天天气不错"
+        "你好啊",
+        "我看见地上有100元钱"
     ]
     start_context = "我是一个中文语言模型"
     tokenizer = AutoTokenizer.from_pretrained('/home/ubuntu/work/data/llm-data/pretrained_model/llama2/tokenizer/')

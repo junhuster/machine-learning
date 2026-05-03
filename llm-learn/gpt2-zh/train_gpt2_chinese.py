@@ -204,7 +204,7 @@ def save_model_with_cleanup(model, optimizer, global_step, save_dir=SAVE_DIR, ma
         "step": global_step,
         "config": GPT_CONFIG_124M
     }, save_path)
-    print(f"\n✅ 模型已保存：{model_name}")
+    log.info(f"\n✅ 模型已保存：{model_name}")
 
     model_files = [f for f in os.listdir(save_dir) if f.endswith(".pth") and "gpt2_pretrain" in f]
     model_files.sort(key=lambda x: os.path.getctime(os.path.join(save_dir, x)))
@@ -212,7 +212,7 @@ def save_model_with_cleanup(model, optimizer, global_step, save_dir=SAVE_DIR, ma
     if len(model_files) > max_keep:
         oldest_file = model_files[0]
         os.remove(os.path.join(save_dir, oldest_file))
-        print(f"🗑️ 已删除最老模型：{oldest_file}")
+        log.info(f"🗑️ 已删除最老模型：{oldest_file}")
 
 # ------------------- 训练主函数 -------------------
 def train_model_simple(model, train_loader, val_loader, optimizer, scheduler, device, num_epochs,
@@ -244,7 +244,7 @@ def train_model_simple(model, train_loader, val_loader, optimizer, scheduler, de
                 current_lr = optimizer.param_groups[0]["lr"]
                 log.info(f"Ep {epoch+1:02d} | Step {global_step:06d} | "
                       f"Train {train_loss:.3f} | Val {val_loss:.3f} | LR {current_lr:.6f}")
-            if global_step % SAVE_STEP == 0:
+            if global_step % 200 == 0:
                 save_model_with_cleanup(model, optimizer, global_step)
                 Gtext.generate_and_print_sample(model, tokenizer, device, start_context)
 
@@ -328,7 +328,7 @@ if __name__ == "__main__":
     log.info(f"✅ 设备：{DEVICE} | 参数量：{sum(p.numel() for p in model.parameters()):,}")
     log.info("=" * 80)
 
-    start_text = "我是一个中文语言模型"
+    start_text = "公园里的花开了"
     train_losses, val_losses, tokens_seen = train_model_simple(
         model, train_loader, val_loader, optimizer, scheduler, DEVICE,
         num_epochs=NUM_EPOCH, eval_freq=EVAL_STEP, eval_iter=5,

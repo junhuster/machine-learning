@@ -127,31 +127,33 @@ class TextGenerator:
         
         return generated_texts  # 返回生成的文本样本
     
+predict_type = "sft"
 if __name__ == "__main__":
-    print("------------------- Pretrain Sample ------------------- \n")
+    if predict_type == "pretrain":
+        print("------------------- Pretrain Sample ------------------- \n")
 
-    pretrain_prompt_datas = [
-        '<|im_start|>你好啊',
-        '<|im_start|>我看见地上有一张100元钱',
-    ]
-    generator = TextGenerator(checkpoint='/home/ubuntu/work/data/llm-data/pretrained_model/llama2/model/8G/pretrain_0.2b_8G.pth')  # 初始化生成器
-    for i in range(len(pretrain_prompt_datas)):
-        samples = generator.pretrain_sample(start=pretrain_prompt_datas[i], num_samples=1, max_new_tokens=120, temperature=0.75)
-        print(f"\ninput text{i+1}:\n{pretrain_prompt_datas[i]}")
-        print(f"\nllama2 model output text {i+1}:\n{pretrain_prompt_datas[i]}{samples[0]}\n{'-'*20}")  # 打印生成的样本并用分隔线分割
-
-    exit(0)
-    print("\n ------------------- SFT Sample ------------------- \n")
-
-    sft_prompt_datas = [
-        '你好呀',
-        "中国的首都是哪里？",
-        "1+12等于多少？",
-        "你是谁？"
-    ]
-    generator = TextGenerator(checkpoint='./sft_model_215M/sft_dim1024_layers18_vocab_size6144.pth')  # 初始化生成器
-    for i in range(len(sft_prompt_datas)):
-        samples = generator.sft_sample(start=sft_prompt_datas[i], num_samples=1, max_new_tokens=128, temperature=0.6)
-        print(f"\nSample {i+1}:\nQuestion: {sft_prompt_datas[i]} \nAI answer: {samples[0]}\n{'-'*20}")  # 打印生成的样本并用分隔线分割
-
-    
+        pretrain_prompt_datas = [
+            '<|im_start|>你好啊',
+            '<|im_start|>我看见地上有一张100元钱',
+        ]
+        generator = TextGenerator(checkpoint='/home/ubuntu/work/data/llm-data/pretrained_model/llama2/model/8G/llama2_pretrain_0.2b_8G.pth')  # 初始化生成器
+        for i in range(len(pretrain_prompt_datas)):
+            samples = generator.pretrain_sample(start=pretrain_prompt_datas[i], num_samples=1, max_new_tokens=120, temperature=0.75)
+            print(f"\ninput text{i+1}:\n{pretrain_prompt_datas[i]}")
+            print(f"\nllama2 model output text {i+1}:\n{pretrain_prompt_datas[i]}{samples[0]}\n{'-'*20}")  # 打印生成的样本并用分隔线分割
+        
+    elif predict_type == "sft":
+        print("\n ------------------- SFT Sample ------------------- \n")
+        sft_prompt_datas = [
+            '你好呀',
+            "中国的首都是哪里？",
+            "1+12等于多少？",
+            "哪个城市的牡丹花比较多"
+        ]
+        generator = TextGenerator(checkpoint='/home/ubuntu/work/data/llm-data/pretrained_model/llama2/model/8G/llama2-sft-test.pth')  # 初始化生成器
+        for i in range(len(sft_prompt_datas)):
+            samples = generator.sft_sample(start=sft_prompt_datas[i], num_samples=1, max_new_tokens=128, temperature=0.6)
+            print(f"\nQuestion {i+1}:\n{sft_prompt_datas[i]}")
+            print(f"\nAI answer {i+1}: {samples[0]}\n{'-'*20}")  # 打印生成的样本并用分隔线分割
+    else:
+        print(f"unkown predict type")

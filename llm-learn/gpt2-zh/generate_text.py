@@ -89,6 +89,7 @@ def generate_and_print_sample(model, tokenizer, device, start_context, temperatu
             top_k=top_k
         )
         decoded_text = token_ids_to_text(token_ids, tokenizer)
+    log.info(f"output text:{decoded_text}")
     print(f"\ninput text {index}: {start_context}\n")
     print(f"\noutput_text {index}: {decoded_text}\n")
     model.train()

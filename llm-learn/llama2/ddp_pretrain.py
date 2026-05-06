@@ -74,7 +74,7 @@ def get_lr(it, all):
     coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))  # 余弦系数
     return min_lr + coeff * (args.learning_rate - min_lr)
 
-def train_epoch(epoch):
+def train_epoch(epoch, continue_step=0):
     """
     训练一个epoch的函数
     
@@ -92,7 +92,15 @@ def train_epoch(epoch):
     start_time = time.time()  # 记录开始时间
     
     # 遍历数据加载器中的每个batch
+    skip_step = 0
+    log_skip = False
     for step, (X, Y, loss_mask) in enumerate(train_loader):
+        if continue_step > 0 and step < continue_step:
+            skip_step += 1
+            continue
+        if skip_step > 0 and log_skip == False:
+            log.info(f"skip {skip_step}")
+            log_skip = True
         # 将数据转移到指定设备（GPU/CPU）
         X = X.to(args.device)  # 输入序列
         Y = Y.to(args.device)  # 目标序列
@@ -137,11 +145,12 @@ def train_epoch(epoch):
         if step % args.log_interval == 0:
             spend_time = time.time() - start_time
             # 打印训练进度信息
+            real_step = step - skip_step
             log.info(
                 f"Epoch:[{epoch + 1}/{args.epochs}]({step}/{iter_per_epoch}) "
                 f"loss:{loss.item() * args.accumulation_steps:.3f} "
                 f"lr:{optimizer.param_groups[-1]['lr']:.7f} "
-                f"epoch_Time:{spend_time / (step + 1) * iter_per_epoch // 60 - spend_time // 60}min;"
+                f"epoch_Time:{spend_time / (real_step + 1) * iter_per_epoch // 60 - spend_time // 60}min;"
             )            
             # 如果启用SwanLab，记录训练指标
             if args.use_swanlab:
@@ -151,7 +160,7 @@ def train_epoch(epoch):
                 })
 
         # 每save_interval步保存一次模型
-        if (step + 1) % args.save_interval == 0:
+        if (step + 1) % args.save_interval == 0 or (iter_per_epoch - step) < 1:
             model.eval()  # 切换到评估模式
             save_model.save_checkpoint(model, args.save_dir, lm_config.dim, lm_config.n_layers, lm_config.vocab_size, step, 2)
             model.train()  # 切换回训练模式
@@ -208,6 +217,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Tiny-LLM Pretraining")
     
     # 基础训练参数
+    parser.add_argument("--recover_checkpoint", type=str, default="/home/ubuntu/work/data/llm-data/pretrained_model/llama2/model/8G/pretrain_0.2b_8G.pth", help="断点续训")
+    parser.add_argument("--recover_step", type=int, default=250000, help="断点续训")
     parser.add_argument("--out_dir", type=str, default="/home/ubuntu/work/data/llm-data/pretrained_model/llama2/model/8G", help="模型输出目录")
     parser.add_argument("--epochs", type=int, default=1, help="训练轮数")
     parser.add_argument("--batch_size", type=int, default=32, help="批次大小")
@@ -218,7 +229,7 @@ if __name__ == "__main__":
     # 实验跟踪和数据加载参数
     parser.add_argument("--use_swanlab", action="store_true", help="是否使用SwanLab进行实验跟踪")
     parser.add_argument("--num_workers", type=int, default=8, help="数据加载的工作进程数")
-    parser.add_argument("--data_path", type=str, default="/home/ubuntu/work/data/llm-data/train_data/zh/monkey/pretrain_data/monkey_pretrain_8G.jsonl", help="训练数据路径")
+    parser.add_argument("--data_path", type=str, default="/home/ubuntu/work/data/llm-data/train_data/zh/monkey/pretrain_data/monkey_pretrain.jsonl", help="训练数据路径")
     
     # 训练优化参数
     parser.add_argument("--accumulation_steps", type=int, default=8, help="梯度累积步数")
@@ -281,6 +292,16 @@ if __name__ == "__main__":
     # ==================== 模型和数据初始化 ====================
     # 初始化模型和分词器
     model, tokenizer = init_model()
+    if os.path.exists(args.recover_checkpoint):
+        checkpoint_dict = torch.load(args.recover_checkpoint, map_location=self.device, weights_only=True)  # 加载模型参数 # 初始化模型参数
+        sunwanted_prefix = '_orig_mod.'
+        for k, v in list(checkpoint_dict.items()):
+            if k.startswith(sunwanted_prefix):
+                checkpoint_dict[k[len(sunwanted_prefix):]] = checkpoint_dict.pop(k)
+        model.load_state_dict(checkpoint_dict, strict=False)
+        log.info(f"断点续训，加载已有的checkpoint:{args.recover_checkpoint}")
+    else:
+        log.info(f"从0开始训练")
     
     # 创建训练数据集
     train_ds = PretrainDataset(args.data_path, tokenizer, max_length=max_seq_len)
@@ -309,4 +330,4 @@ if __name__ == "__main__":
     
     # 开始训练循环
     for epoch in range(args.epochs):
-        train_epoch(epoch)
+        train_epoch(epoch, args.recover_step)

@@ -150,7 +150,7 @@ if __name__ == "__main__":
             "1+12等于多少？",
             "哪个城市的牡丹花比较多"
         ]
-        generator = TextGenerator(checkpoint='/home/ubuntu/work/data/llm-data/pretrained_model/llama2/model/8G/llama2-sft-test.pth')  # 初始化生成器
+        generator = TextGenerator(checkpoint='/home/ubuntu/work/data/llm-data/pretrained_model/llama2/model/8G/llama2_sft_0.2b_P8G_S5G_step_22399.pth')  # 初始化生成器
         for i in range(len(sft_prompt_datas)):
             samples = generator.sft_sample(start=sft_prompt_datas[i], num_samples=1, max_new_tokens=128, temperature=0.6)
             print(f"\nQuestion {i+1}:\n{sft_prompt_datas[i]}")

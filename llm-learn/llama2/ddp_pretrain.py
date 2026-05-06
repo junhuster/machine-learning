@@ -12,7 +12,7 @@ import torch
 from torch import optim
 from torch.utils.data import DataLoader
 from contextlib import nullcontext
-
+from itertools import islice
 from transformers import AutoTokenizer
 
 from k_model import ModelConfig, Transformer
@@ -25,7 +25,7 @@ import logging as log
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent/'util'))
 import logger
-logger.init_logger("/home/ubuntu/work/logs/llama2-pre-train.log")
+logger.init_logger("/home/ubuntu/work/logs/llama2-pre-train-32G.log")
 
 # 忽略警告信息
 warnings.filterwarnings('ignore')
@@ -92,15 +92,10 @@ def train_epoch(epoch, continue_step=0):
     start_time = time.time()  # 记录开始时间
     
     # 遍历数据加载器中的每个batch
-    skip_step = 0
-    log_skip = False
-    for step, (X, Y, loss_mask) in enumerate(train_loader):
-        if continue_step > 0 and step < continue_step:
-            skip_step += 1
-            continue
-        if skip_step > 0 and log_skip == False:
-            log.info(f"skip {skip_step}")
-            log_skip = True
+    print(f"continue-step:{continue_step}")
+    if continue_step < 0:
+        continue_step = 0
+    for step, (X, Y, loss_mask) in enumerate(islice(train_loader, continue_step, None)):
         # 将数据转移到指定设备（GPU/CPU）
         X = X.to(args.device)  # 输入序列
         Y = Y.to(args.device)  # 目标序列
@@ -145,12 +140,15 @@ def train_epoch(epoch, continue_step=0):
         if step % args.log_interval == 0:
             spend_time = time.time() - start_time
             # 打印训练进度信息
-            real_step = step - skip_step
+            real_iter_per_epoch = iter_per_epoch - continue_step
+            if real_iter_per_epoch <= 0:
+                log.info(f"real_iter_epoch:{real_iter_per_epoch} is not valid")
+                exit(0)
             log.info(
                 f"Epoch:[{epoch + 1}/{args.epochs}]({step}/{iter_per_epoch}) "
                 f"loss:{loss.item() * args.accumulation_steps:.3f} "
                 f"lr:{optimizer.param_groups[-1]['lr']:.7f} "
-                f"epoch_Time:{spend_time / (real_step + 1) * iter_per_epoch // 60 - spend_time // 60}min;"
+                f"epoch_Time:{spend_time / (step + 1) * real_iter_per_epoch // 60 - spend_time // 60}min;"
             )            
             # 如果启用SwanLab，记录训练指标
             if args.use_swanlab:
@@ -217,7 +215,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Tiny-LLM Pretraining")
     
     # 基础训练参数
-    parser.add_argument("--recover_checkpoint", type=str, default="/home/ubuntu/work/data/llm-data/pretrained_model/llama2/model/8G/pretrain_0.2b_8G.pth", help="断点续训")
+    parser.add_argument("--recover_checkpoint", type=str, default="/home/ubuntu/work/data/llm-data/pretrained_model/llama2/model/8G/llama2_pretrain_0.2b_8G.pth", help="断点续训")
     parser.add_argument("--recover_step", type=int, default=250000, help="断点续训")
     parser.add_argument("--out_dir", type=str, default="/home/ubuntu/work/data/llm-data/pretrained_model/llama2/model/8G", help="模型输出目录")
     parser.add_argument("--epochs", type=int, default=1, help="训练轮数")
@@ -293,7 +291,7 @@ if __name__ == "__main__":
     # 初始化模型和分词器
     model, tokenizer = init_model()
     if os.path.exists(args.recover_checkpoint):
-        checkpoint_dict = torch.load(args.recover_checkpoint, map_location=self.device, weights_only=True)  # 加载模型参数 # 初始化模型参数
+        checkpoint_dict = torch.load(args.recover_checkpoint, map_location=device_type, weights_only=True)  # 加载模型参数 # 初始化模型参数
         sunwanted_prefix = '_orig_mod.'
         for k, v in list(checkpoint_dict.items()):
             if k.startswith(sunwanted_prefix):
@@ -330,4 +328,4 @@ if __name__ == "__main__":
     
     # 开始训练循环
     for epoch in range(args.epochs):
-        train_epoch(epoch, args.recover_step)
+        train_epoch(epoch, continue_step=args.recover_step)

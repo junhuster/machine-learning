@@ -8,7 +8,7 @@ import logging as log
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent/'util'))
 import logger
-logger.init_logger("/home/ubuntu/work/logs/llama2-pre-train-32G.log")
+logger.init_logger("/home/ubuntu/work/logs/llama2-sft-train-32G-5G.log")
 
 def save_checkpoint(model, save_dir, dim, n_layers, vocab_size, step, max_checkpoints=3, is_pretrain=True):
     """

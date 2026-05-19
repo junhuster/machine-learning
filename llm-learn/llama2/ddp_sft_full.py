@@ -22,7 +22,7 @@ import logging as log
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent/'util'))
 import logger
-logger.init_logger("/home/ubuntu/work/logs/llama2-sft-train.log")
+logger.init_logger("/home/ubuntu/work/logs/llama2-sft-train-32G-5G.log")
 
 # 忽略警告
 warnings.filterwarnings('ignore')
@@ -129,7 +129,7 @@ def init_model():
     model = Transformer(lm_config)
 
     # 加载预训练权重
-    ckp = '/home/ubuntu/work/data/llm-data/pretrained_model/llama2/model/8G/llama2_pretrain_0.2b_8G.pth'
+    ckp = '/home/ubuntu/work/data/llm-data/pretrained_model/llama2/model/8G/release/llama2_pretrain_0.2b_32G.pth'
     state_dict = torch.load(ckp, map_location=args.device)
     unwanted_prefix = '_orig_mod.'
     for k, v in list(state_dict.items()):

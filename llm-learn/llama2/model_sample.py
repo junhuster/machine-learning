@@ -134,25 +134,26 @@ if __name__ == "__main__":
 
         pretrain_prompt_datas = [
             '<|im_start|>你好啊',
-            '<|im_start|>我看见地上有一张100元钱',
+            '<|im_start|>iphone 14',
         ]
-        generator = TextGenerator(checkpoint='/home/ubuntu/work/data/llm-data/pretrained_model/llama2/model/8G/llama2_pretrain_0.2b_8G.pth')  # 初始化生成器
+        generator = TextGenerator(checkpoint='/home/ubuntu/work/data/llm-data/pretrained_model/llama2/model/8G/release/llama2_pretrain_0.2b_32G.pth')  # 初始化生成器
         for i in range(len(pretrain_prompt_datas)):
             samples = generator.pretrain_sample(start=pretrain_prompt_datas[i], num_samples=1, max_new_tokens=120, temperature=0.75)
             print(f"\ninput text{i+1}:\n{pretrain_prompt_datas[i]}")
             print(f"\nllama2 model output text {i+1}:\n{pretrain_prompt_datas[i]}{samples[0]}\n{'-'*20}")  # 打印生成的样本并用分隔线分割
         
     elif predict_type == "sft":
-        print("\n ------------------- SFT Sample ------------------- \n")
+        #print("\n ------------------- SFT Sample ------------------- \n")
         sft_prompt_datas = [
             '你好呀',
             "中国的首都是哪里？",
-            "1+12等于多少？",
-            "哪个城市的牡丹花比较多"
+            "刘备和关羽什么关系？",
+            "宋徽宗怎么样?",
+            "应天门在哪里？"
         ]
-        generator = TextGenerator(checkpoint='/home/ubuntu/work/data/llm-data/pretrained_model/llama2/model/8G/llama2_sft_0.2b_P8G_S5G_step_22399.pth')  # 初始化生成器
+        generator = TextGenerator(checkpoint='/home/ubuntu/work/data/llm-data/pretrained_model/llama2/model/32G/llama2_sft_0.2b_P32G_S5G_step_223999.pth')  # 初始化生成器
         for i in range(len(sft_prompt_datas)):
-            samples = generator.sft_sample(start=sft_prompt_datas[i], num_samples=1, max_new_tokens=128, temperature=0.6)
+            samples = generator.sft_sample(start=sft_prompt_datas[i], num_samples=1, max_new_tokens=100, temperature=0.6)
             print(f"\nQuestion {i+1}:\n{sft_prompt_datas[i]}")
             print(f"\nAI answer {i+1}: {samples[0]}\n{'-'*20}")  # 打印生成的样本并用分隔线分割
     else:

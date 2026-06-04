@@ -13,14 +13,14 @@ from datetime import datetime
 import logging as log
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent/'util'))
-import logger
-logger.init_logger("/home/ubuntu/work/logs/gpt2-zh-pre-train.log")
+from logger import init_logger, log
+init_logger("/home/ubuntu/work/logs/gpt2-zh-pre-train-32g.log")
 import generate_text as Gtext
 # ===================== 配置区域 =====================
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-TRAIN_JSON_PATH = "/home/ubuntu/work/data/llm-data/train_data/zh/monkey/pretrain_data/monkey_pretrain_8G.jsonl"        # 10GB 训练数据
+TRAIN_JSON_PATH = "/home/ubuntu/work/data/llm-data/train_data/zh/monkey/pretrain_data/monkey_pretrain.jsonl"        # 10GB 训练数据
 VAL_JSON_PATH = "/home/ubuntu/work/data/llm-data/train_data/zh/monkey/pretrain_data/monkey_pretrain_val_34M.jsonl"          # 验证集（建议自己切分小文件）
-SAVE_DIR = "/home/ubuntu/work/data/llm-data/pretrained_model/gpt2/124M_zh/"
+SAVE_DIR = "/home/ubuntu/work/data/llm-data/pretrained_model/gpt2/32G_zh/"
 VOCAB_SIZE = 10000
 CONTEXT_LENGTH = 256
 SAVE_STEP = 1000
@@ -308,6 +308,7 @@ def create_streaming_dataloader(json_path, tokenizer, batch_size=2, max_length=2
 
 # ------------------- 主训练 -------------------
 if __name__ == "__main__":
+    log.info(f"enter main func")
     tokenizer = AutoTokenizer.from_pretrained('/home/ubuntu/work/data/llm-data/pretrained_model/llama2/tokenizer/')
     train_loader = create_streaming_dataloader(
         TRAIN_JSON_PATH, tokenizer, batch_size=BATCH_SIZE,
@@ -317,7 +318,7 @@ if __name__ == "__main__":
         VAL_JSON_PATH, tokenizer, batch_size=BATCH_SIZE,
         max_length=CONTEXT_LENGTH, shuffle=False
     )
-
+    log.info(f"after create train_loader/val_loader")
     model = GPTModel(GPT_CONFIG_124M)
     model.to(DEVICE)
 

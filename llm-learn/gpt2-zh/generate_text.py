@@ -4,7 +4,7 @@ import torch
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent/'util'))
 import logger
-logger.init_logger("/home/ubuntu/work/logs/gpt2-zh-pre-train.log")
+#logger.init_logger("/home/ubuntu/work/logs/gpt2-zh-pre-train.log")
 
 def generate_text_simple(model, idx, max_new_tokens, context_size, temperature=1.0, top_k=None):
     """

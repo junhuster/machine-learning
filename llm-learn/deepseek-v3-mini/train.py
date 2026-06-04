@@ -59,8 +59,9 @@ DEFAULTS = dict(
     max_ckpts=2,                        # 最多保留N个最新checkpoint
 
     # 训练
-    num_epochs=3,
+    num_epochs=1,
     batch_size=8,
+    grad_accum_steps=1,                 # 梯度累积步数；1=不累积，>1=累积N步后更新一次参数
     lr=3e-4,                            # 余弦退火起始lr
     lr_min=1e-5,                        # 余弦退火最低lr
     weight_decay=0.01,
@@ -249,11 +250,13 @@ def train(args):
         pin_memory=(device.type == "cuda"),
     )
     steps_per_epoch = len(loader)
-    total_steps = steps_per_epoch * args.num_epochs
+    # optimizer实际更新次数 = batch总数 / grad_accum_steps
+    total_steps = steps_per_epoch * args.num_epochs // args.grad_accum_steps
     logger.info(
         f"数据集大小: {len(dataset)} 样本, "
         f"steps/epoch: {steps_per_epoch}, "
-        f"total_steps: {total_steps}"
+        f"grad_accum_steps: {args.grad_accum_steps}, "
+        f"total_optimizer_steps: {total_steps}"
     )
 
     # ---- 优化器 ----
@@ -282,21 +285,28 @@ def train(args):
     # ---- 训练循环 ----
     global_step = start_step
     run_start_time = time.time()    # 本次运行开始时间
-    step_time_accum = 0.0           # 本次运行累计步时间
-    steps_this_run = 0              # 本次运行已执行的步数
+    step_time_accum = 0.0           # 本次运行累计步时间（按optimizer step计）
+    steps_this_run = 0              # 本次运行已完成的optimizer step数
     pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
+    accum_loss = 0.0                # 当前累积周期内的累计loss（用于日志展示）
 
     model.train()
 
     for epoch in range(start_epoch, args.num_epochs):
         for batch_idx, batch in enumerate(loader):
-            # 跳过已完成的步（续训时）
-            steps_done_before_this_epoch = epoch * steps_per_epoch
-            current_global_step_if_processed = steps_done_before_this_epoch + batch_idx + 1
-            if current_global_step_if_processed <= start_step:
+            # 断点续训跳步：global_step是optimizer更新次数，
+            # 对应的batch起始位置是 start_step * grad_accum_steps
+            if batch_idx + epoch * steps_per_epoch < start_step * args.grad_accum_steps:
                 continue
 
-            step_t0 = time.time()
+            # 每个累积周期的第一个batch时清零梯度、记录计时起点
+            is_first_in_accum = (batch_idx % args.grad_accum_steps == 0)
+            is_last_in_accum = (batch_idx % args.grad_accum_steps == args.grad_accum_steps - 1)
+
+            if is_first_in_accum:
+                optimizer.zero_grad()
+                step_t0 = time.time()
+                accum_loss = 0.0
 
             batch = batch.to(device)        # (B, max_seq_len+1)
             input_ids = batch[:, :-1]       # (B, max_seq_len)  输入
@@ -306,66 +316,69 @@ def train(args):
             with torch.cuda.amp.autocast(enabled=(device.type == "cuda"), dtype=torch.float16):
                 logits = model(input_ids, use_cache=False)   # (B, T, V)
                 # 交叉熵loss，忽略pad位置
+                # 梯度累积：loss除以累积步数，使多步梯度之和等价于一次大batch的梯度
                 loss = F.cross_entropy(
                     logits.view(-1, logits.size(-1)),
                     target_ids.reshape(-1),
                     ignore_index=pad_id,
-                )
+                ) / args.grad_accum_steps
 
-            optimizer.zero_grad()
             scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-            scaler.step(optimizer)
-            scaler.update()
-            scheduler.step()
+            accum_loss += loss.item()
 
-            global_step += 1
-            step_duration = time.time() - step_t0
-            step_time_accum += step_duration
-            steps_this_run += 1
+            # 仅在累积满grad_accum_steps步时执行参数更新
+            if is_last_in_accum:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+                scaler.step(optimizer)
+                scaler.update()
+                scheduler.step()  # 每个optimizer step更新lr
 
-            # ---- 打印日志 ----
-            if global_step % args.log_steps == 0:
-                avg_step_time = step_time_accum / steps_this_run
-                remaining_steps = total_steps - global_step
-                eta_minutes = avg_step_time * remaining_steps / 60.0
-                current_lr = scheduler.get_last_lr()[0]
+                global_step += 1
+                step_time_accum += time.time() - step_t0
+                steps_this_run += 1
 
-                logger.info(
-                    f"epoch={epoch + 1}/{args.num_epochs} | "
-                    f"step={global_step}/{total_steps} | "
-                    f"loss={loss.item():.4f} | "
-                    f"lr={current_lr:.2e} | "
-                    f"ETA={eta_minutes:.1f}min"
-                )
+                # ---- 打印日志 ----
+                if global_step % args.log_steps == 0:
+                    avg_step_time = step_time_accum / steps_this_run
+                    remaining_steps = total_steps - global_step
+                    eta_minutes = avg_step_time * remaining_steps / 60.0
+                    current_lr = scheduler.get_last_lr()[0]
 
-                # 用start_text做一次推理，观察生成质量
-                model.eval()
-                try:
-                    sample_text = generate(
-                        model=model,
-                        tokenizer=tokenizer,
-                        prompt=args.start_text,
-                        max_new_tokens=args.gen_max_tokens,
-                        temperature=args.gen_temperature,
-                        top_p=0.9,
-                        device=device,
-                    )
                     logger.info(
-                        f"[sample] prompt='{args.start_text}' => '{sample_text}'"
+                        f"epoch={epoch + 1}/{args.num_epochs} | "
+                        f"step={global_step}/{total_steps} | "
+                        f"loss={accum_loss:.4f} | "
+                        f"lr={current_lr:.2e} | "
+                        f"ETA={eta_minutes:.1f}min"
                     )
-                except Exception as e:
-                    logger.warning(f"[sample] 生成失败: {e}")
-                model.train()
 
-            # ---- 保存checkpoint ----
-            if global_step % args.save_steps == 0:
-                save_checkpoint(
-                    model, optimizer, scheduler, scaler,
-                    global_step, epoch,
-                    args.model_dir, args.max_ckpts, logger,
-                )
+                    # 用start_text做一次推理，观察生成质量
+                    model.eval()
+                    try:
+                        sample_text = generate(
+                            model=model,
+                            tokenizer=tokenizer,
+                            prompt=args.start_text,
+                            max_new_tokens=args.gen_max_tokens,
+                            temperature=args.gen_temperature,
+                            top_p=0.9,
+                            device=device,
+                        )
+                        logger.info(
+                            f"[sample] prompt='{args.start_text}' => '{sample_text}'"
+                        )
+                    except Exception as e:
+                        logger.warning(f"[sample] 生成失败: {e}")
+                    model.train()
+
+                # ---- 保存checkpoint ----
+                if global_step % args.save_steps == 0:
+                    save_checkpoint(
+                        model, optimizer, scheduler, scaler,
+                        global_step, epoch,
+                        args.model_dir, args.max_ckpts, logger,
+                    )
 
     # ---- 训练结束，保存最终checkpoint ----
     save_checkpoint(

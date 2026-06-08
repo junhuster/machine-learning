@@ -102,11 +102,20 @@ class Llama4TextExperts(nn.Module):
         Returns:
             (num_experts * tokens_per_expert, hidden_size)
         """
-        # reshape 为 (num_experts, tokens_per_expert, hidden_size)，与权重第0维对齐
+        # (num_experts*tokens_per_expert, hidden_size) -> (num_experts, tokens_per_expert, hidden_size)
         hidden_states = hidden_states.view(self.gate_up_proj.shape[0], -1, self.hidden_size)
+        # bmm: (num_experts, tokens_per_expert, hidden_size) x (num_experts, hidden_size, 2*expert_dim)
+        #   -> (num_experts, tokens_per_expert, 2*expert_dim)
         gate_up = torch.bmm(hidden_states, self.gate_up_proj)
-        gate, up = gate_up.chunk(2, dim=-1)  # SwiGLU 的两路分支
+        # chunk: 沿最后维度切成两半
+        # gate: (num_experts, tokens_per_expert, expert_dim)
+        # up:   (num_experts, tokens_per_expert, expert_dim)
+        gate, up = gate_up.chunk(2, dim=-1)
+        # SwiGLU: act(gate) * up -> (num_experts, tokens_per_expert, expert_dim)
+        # bmm: (num_experts, tokens_per_expert, expert_dim) x (num_experts, expert_dim, hidden_size)
+        #   -> (num_experts, tokens_per_expert, hidden_size)
         next_states = torch.bmm((up * self.act_fn(gate)), self.down_proj)
+        # (num_experts, tokens_per_expert, hidden_size) -> (num_experts*tokens_per_expert, hidden_size)
         next_states = next_states.view(-1, self.hidden_size)
         return next_states
 
@@ -135,8 +144,12 @@ class Llama4TextMLP(nn.Module):
         self.activation_fn = ACT2FN[config.hidden_act]
 
     def forward(self, x):
-        # SwiGLU：act(gate) * up，再下投影
+        # x: (batch, seq, hidden_size)
+        # gate_proj(x): (batch, seq, intermediate_size)
+        # up_proj(x):   (batch, seq, intermediate_size)
+        # act(gate) * up: (batch, seq, intermediate_size)  SwiGLU 激活
         down_proj = self.activation_fn(self.gate_proj(x)) * self.up_proj(x)
+        # down_proj: (batch, seq, hidden_size)
         return self.down_proj(down_proj)
 
 
@@ -216,12 +229,18 @@ class Llama4Router(nn.Linear):
         self.top_k = config.num_experts_per_tok
 
     def forward(self, hidden_states):
-        router_logits = super().forward(hidden_states)
+        # hidden_states: (batch*seq, hidden_size)
+        # super().forward: Linear(hidden_size -> num_experts)
+        router_logits = super().forward(hidden_states)          # (batch*seq, num_experts)
         # 取 top-k 专家的 logit 值和索引
         router_top_value, router_indices = torch.topk(router_logits, self.top_k, dim=1)
+        # router_top_value: (batch*seq, top_k)
+        # router_indices:   (batch*seq, top_k)
         # 非 top-k 位置填 -inf，再 sigmoid → 0；top-k 位置保留原值 sigmoid → 路由权重
         router_scores = torch.full_like(router_logits, float("-inf")).scatter_(1, router_indices, router_top_value)
+        # router_scores: (batch*seq, num_experts)  仅 top-k 位置有值，其余为 -inf
         router_scores = torch.nn.functional.sigmoid(router_scores.float()).to(router_scores.dtype)
+        # router_scores: (batch*seq, num_experts)  仅 top-k 位置非零（0~1），其余为 0
         return router_scores, router_logits
 
 
@@ -251,23 +270,30 @@ class Llama4TextMoe(nn.Module):
         self.shared_expert = Llama4TextMLP(config)  # 始终激活的共享专家
 
     def forward(self, hidden_states):
-        # 展平为 (batch*seq, hidden)，方便 token 级别路由
-        hidden_states = hidden_states.reshape(-1, self.hidden_dim)
+        # hidden_states: (batch, seq, hidden_size)
+        # 展平为 token 维度，方便 token 级别路由
+        hidden_states = hidden_states.reshape(-1, self.hidden_dim)  # (batch*seq, hidden_size)  N=batch*seq
         router_scores, router_logits = self.router(hidden_states)
+        # router_scores:  (N, num_experts)  仅 top-k 位置非零
+        # router_logits:  (N, num_experts)  原始 logits，用于辅助 loss
 
-        # 将每个 token 复制 num_experts 份，乘以对应路由权重
-        # router_scores.transpose(0,1): (num_experts, tokens) → reshape(-1,1) → 广播到 hidden
-        routed_in = hidden_states.repeat(router_scores.shape[1], 1)           # (num_experts*tokens, hidden)
-        routed_in = routed_in * router_scores.transpose(0, 1).reshape(-1, 1)  # 非激活专家对应权重为0
+        # 将每个 token 复制 num_experts 份
+        routed_in = hidden_states.repeat(router_scores.shape[1], 1)           # (num_experts*N, hidden_size)
+        # router_scores.transpose(0,1): (num_experts, N)
+        # .reshape(-1, 1):              (num_experts*N, 1)  与 routed_in 广播相乘
+        # 非激活专家对应权重为 0，乘后该专家对应 token 输入为全 0
+        routed_in = routed_in * router_scores.transpose(0, 1).reshape(-1, 1)  # (num_experts*N, hidden_size)
 
-        # 所有专家并行计算（非激活专家因输入为0，输出也为0）
-        routed_out = self.experts(routed_in)  # (num_experts*tokens, hidden)
+        # 所有专家并行计算（非激活专家因输入为 0，输出也为 0）
+        routed_out = self.experts(routed_in)                                   # (num_experts*N, hidden_size)
 
-        # shared_expert 始终计算，作为基底输出
-        out = self.shared_expert(hidden_states)  # (tokens, hidden)
+        # shared_expert 始终对所有 token 计算
+        out = self.shared_expert(hidden_states)                                # (N, hidden_size)
 
-        # 累加所有专家输出：reshape → (num_experts, tokens, hidden).sum(dim=0) → (tokens, hidden)
+        # routed_out.reshape(num_experts, N, hidden_size).sum(dim=0): (N, hidden_size)
+        # 等效于将每个 token 的 top-k 专家输出加权求和
         out.add_(routed_out.reshape(router_scores.shape[1], -1, routed_out.shape[-1]).sum(dim=0))
+        # out: (N, hidden_size)  注意：上层 Llama4TextDecoderLayer 会通过 .view(residual.shape) 还原为 (batch, seq, hidden_size)
         return out, router_logits
 
 
@@ -306,9 +332,9 @@ class Llama4TextRotaryEmbedding(nn.Module):
 
     @staticmethod
     def compute_default_rope_parameters(
-        config: Llama4TextConfig | None = None,
-        device: Optional["torch.device"] = None,
-        seq_len: int | None = None,
+            config: Llama4TextConfig | None = None,
+            device: Optional["torch.device"] = None,
+            seq_len: int | None = None,
     ) -> tuple["torch.Tensor", float]:
         """
         标准 RoPE 逆频率计算：
@@ -320,7 +346,7 @@ class Llama4TextRotaryEmbedding(nn.Module):
         dim = getattr(config, "head_dim", None) or config.hidden_size // config.num_attention_heads
         attention_factor = 1.0  # default 类型不缩放注意力
         inv_freq = 1.0 / (
-            base ** (torch.arange(0, dim, 2, dtype=torch.int64).to(device=device, dtype=torch.float) / dim)
+                base ** (torch.arange(0, dim, 2, dtype=torch.int64).to(device=device, dtype=torch.float) / dim)
         )
         return inv_freq, attention_factor
 
@@ -336,26 +362,27 @@ class Llama4TextRotaryEmbedding(nn.Module):
         Returns:
             freqs_cis: 复数张量 (batch, seq_len, head_dim/2)
         """
-        # inv_freq: (head_dim/2,) → 扩展为 (batch, head_dim/2, 1)
+        # inv_freq: (head_dim/2,) -> (1, head_dim/2, 1) -> (batch, head_dim/2, 1)
         inv_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1)
-        # position_ids: (batch, seq_len) → (batch, 1, seq_len)
+        # position_ids: (batch, seq_len) -> (batch, 1, seq_len)
         position_ids_expanded = position_ids[:, None, :].float()
 
         device_type = x.device.type if isinstance(x.device.type, str) and x.device.type != "mps" else "cpu"
         with maybe_autocast(device_type=device_type, enabled=False):  # 强制 float32，防止精度损失
-            # freqs: (batch, seq_len, head_dim/2) = position * inv_freq
+            # matmul: (batch, head_dim/2, 1) x (batch, 1, seq_len) -> (batch, head_dim/2, seq_len)
+            # transpose(1,2): (batch, seq_len, head_dim/2)
             freqs = (inv_freq_expanded.to(x.device) @ position_ids_expanded).transpose(1, 2)
-            # 转换为复数：e^(i * freq) = cos(freq) + i*sin(freq)
+            # polar: 转换为复数 e^(i*freq)，shape 不变: (batch, seq_len, head_dim/2) 复数
             freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
-            freqs_cis = freqs_cis * self.attention_scaling
+            freqs_cis = freqs_cis * self.attention_scaling  # 缩放因子，shape 不变
 
-        return freqs_cis
+        return freqs_cis  # (batch, seq_len, head_dim/2) 复数
 
 
 def apply_rotary_emb(
-    xq: torch.Tensor,
-    xk: torch.Tensor,
-    freqs_cis: torch.Tensor,
+        xq: torch.Tensor,
+        xk: torch.Tensor,
+        freqs_cis: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     将 RoPE 旋转应用到 Query 和 Key 上。
@@ -365,15 +392,22 @@ def apply_rotary_emb(
     这等价于对每对维度 (2i, 2i+1) 做角度为 freq*pos 的二维旋转。
 
     Args:
-        xq, xk:    (..., seq_len, head_dim) 实数张量
+        xq, xk:    (batch, seq_len, num_heads, head_dim) 实数张量
         freqs_cis: (batch, seq_len, head_dim/2) 复数张量
     Returns:
         旋转后的 xq, xk，形状与输入相同
     """
-    # reshape 最后一维为 (head_dim/2, 2)，view_as_complex 将其解释为复数
+    # xq: (batch, seq_len, num_heads, head_dim)
+    # reshape: (batch, seq_len, num_heads, head_dim/2, 2)
+    # view_as_complex: (batch, seq_len, num_heads, head_dim/2) 复数
     xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
     xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
-    # 复数乘法完成旋转；[:, :, None, :] 对 num_heads 维做广播
+
+    # freqs_cis: (batch, seq_len, head_dim/2)
+    # [:, :, None, :]: (batch, seq_len, 1, head_dim/2)  在 num_heads 维广播
+    # 复数乘法: (batch, seq_len, num_heads, head_dim/2) 复数
+    # view_as_real: (batch, seq_len, num_heads, head_dim/2, 2) 实数
+    # flatten(3): (batch, seq_len, num_heads, head_dim)
     xq_out = torch.view_as_real(xq_ * freqs_cis[:, :, None, :]).flatten(3)
     xk_out = torch.view_as_real(xk_ * freqs_cis[:, :, None, :]).flatten(3)
     return xq_out.type_as(xq), xk_out.type_as(xk)
@@ -396,19 +430,22 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     batch, num_key_value_heads, slen, head_dim = hidden_states.shape
     if n_rep == 1:
         return hidden_states
+    # unsqueeze(2): (batch, num_kv_heads, 1, seq, head_dim)
+    # expand:       (batch, num_kv_heads, n_rep, seq, head_dim)
     hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_key_value_heads, n_rep, slen, head_dim)
+    # reshape: (batch, num_kv_heads*n_rep, seq, head_dim) = (batch, num_q_heads, seq, head_dim)
     return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
 
 
 def eager_attention_forward(
-    module: nn.Module,
-    query: torch.Tensor,
-    key: torch.Tensor,
-    value: torch.Tensor,
-    attention_mask: torch.Tensor | None,
-    scaling: float,
-    dropout: float = 0.0,
-    **kwargs,
+        module: nn.Module,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        attention_mask: torch.Tensor | None,
+        scaling: float,
+        dropout: float = 0.0,
+        **kwargs,
 ):
     """
     标准 Scaled Dot-Product Attention（PyTorch 原生实现，无 Flash Attention）。
@@ -417,23 +454,32 @@ def eager_attention_forward(
     直接在当前精度（fp16）下做 softmax，节省显存。
 
     Args:
+        query:   (batch, num_q_heads, seq_q, head_dim)
+        key:     (batch, num_kv_heads, seq_k, head_dim)
+        value:   (batch, num_kv_heads, seq_k, head_dim)
         scaling: 缩放因子，通常为 head_dim^(-0.5)
     Returns:
         (attn_output, attn_weights)
     """
-    # 将 KV head 扩展到与 Q head 数量一致（GQA 支持）
-    key_states = repeat_kv(key, module.num_key_value_groups)
-    value_states = repeat_kv(value, module.num_key_value_groups)
+    # GQA：将 kv_heads 扩展到 q_heads 数量
+    key_states = repeat_kv(key, module.num_key_value_groups)     # (batch, num_q_heads, seq_k, head_dim)
+    value_states = repeat_kv(value, module.num_key_value_groups) # (batch, num_q_heads, seq_k, head_dim)
 
-    # QK^T / sqrt(d_k)
+    # QK^T: (batch, num_q_heads, seq_q, head_dim) x (batch, num_q_heads, head_dim, seq_k)
+    #     -> (batch, num_q_heads, seq_q, seq_k)
     attn_weights = torch.matmul(query, key_states.transpose(2, 3)) * scaling
     if attention_mask is not None:
         attn_weights = attn_weights + attention_mask  # 加因果掩码（-inf 位置 softmax 后为 0）
 
+    # softmax over seq_k 维: (batch, num_q_heads, seq_q, seq_k)
     attn_weights = nn.functional.softmax(attn_weights, dim=-1)
     attn_weights = nn.functional.dropout(attn_weights, p=dropout, training=module.training)
+
+    # attn_weights x V: (batch, num_q_heads, seq_q, seq_k) x (batch, num_q_heads, seq_k, head_dim)
+    #                -> (batch, num_q_heads, seq_q, head_dim)
     attn_output = torch.matmul(attn_weights, value_states)
-    attn_output = attn_output.transpose(1, 2).contiguous()  # (batch, seq, heads, head_dim)
+    # transpose: (batch, seq_q, num_q_heads, head_dim)
+    attn_output = attn_output.transpose(1, 2).contiguous()
 
     return attn_output, attn_weights
 
@@ -482,28 +528,34 @@ class Llama4TextAttention(nn.Module):
             self.qk_norm = Llama4TextL2Norm(config.rms_norm_eps)
 
     def forward(
-        self,
-        hidden_states: torch.Tensor,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor],
-        attention_mask: torch.Tensor | None,
-        past_key_values: Cache | None = None,
-        **kwargs: Unpack[FlashAttentionKwargs],
+            self,
+            hidden_states: torch.Tensor,
+            position_embeddings: tuple[torch.Tensor, torch.Tensor],
+            attention_mask: torch.Tensor | None,
+            past_key_values: Cache | None = None,
+            **kwargs: Unpack[FlashAttentionKwargs],
     ) -> tuple[torch.Tensor, torch.Tensor | None, tuple[torch.Tensor] | None]:
-        input_shape = hidden_states.shape[:-1]   # (batch, seq_len)
-        hidden_shape = (*input_shape, -1, self.head_dim)
+        # hidden_states: (batch, seq, hidden_size)
+        input_shape = hidden_states.shape[:-1]   # (batch, seq)
+        hidden_shape = (*input_shape, -1, self.head_dim)  # (batch, seq, num_heads, head_dim)
 
-        # 线性投影，view 为多头格式 (batch, seq, heads, head_dim)
+        # 线性投影，view 为多头格式
         query_states = self.q_proj(hidden_states).view(hidden_shape)
+        # query_states: (batch, seq, num_q_heads, head_dim)
         key_states = self.k_proj(hidden_states).view(*input_shape, -1, self.head_dim)
+        # key_states:   (batch, seq, num_kv_heads, head_dim)
         value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+        # value_states: (batch, num_q_heads, seq, head_dim)  注意这里已经 transpose
 
-        # 有 RoPE 的层：施加旋转位置编码
+        # 有 RoPE 的层：施加旋转位置编码（shape 不变）
         if self.use_rope:
             query_states, key_states = apply_rotary_emb(
                 query_states, key_states, position_embeddings.to(query_states.device)
             )
+            # query_states: (batch, seq, num_q_heads, head_dim)
+            # key_states:   (batch, seq, num_kv_heads, head_dim)
 
-        # QK Norm：归一化 Q/K（仅有 RoPE 的层）
+        # QK Norm：L2 归一化（shape 不变）
         if hasattr(self, "qk_norm"):
             query_states = self.qk_norm(query_states)
             key_states = self.qk_norm(key_states)
@@ -514,19 +566,22 @@ class Llama4TextAttention(nn.Module):
         if self.attn_temperature_tuning and not self.use_rope:
             past_seen_tokens = past_key_values.get_seq_length(self.layer_idx) if past_key_values is not None else 0
             positions = torch.arange(hidden_states.shape[1], device=hidden_states.device) + past_seen_tokens
+            # attn_scales: (seq,) -> (1, seq, 1, 1) 广播到 (batch, seq, num_heads, head_dim)
             attn_scales = (
-                torch.log1p(torch.floor((positions.float() + 1.0) / self.floor_scale)) * self.attn_scale + 1.0
+                    torch.log1p(torch.floor((positions.float() + 1.0) / self.floor_scale)) * self.attn_scale + 1.0
             )
             attn_scales = attn_scales.view((1, input_shape[-1], 1, 1)).expand((*input_shape, 1, 1))
             query_states = (query_states * attn_scales).to(query_states.dtype)
 
         # 转置为 (batch, heads, seq, head_dim)，统一后续计算格式
-        query_states = query_states.transpose(1, 2)
-        key_states = key_states.transpose(1, 2)
+        query_states = query_states.transpose(1, 2)  # (batch, num_q_heads, seq, head_dim)
+        key_states = key_states.transpose(1, 2)      # (batch, num_kv_heads, seq, head_dim)
 
-        # 更新 KV cache（推理时）
+        # 更新 KV cache（推理时），k/v shape 含历史 token
         if past_key_values is not None:
             key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx)
+            # key_states:   (batch, num_kv_heads, past+seq, head_dim)
+            # value_states: (batch, num_q_heads,  past+seq, head_dim)
 
         # 根据配置选择注意力实现（eager / sdpa / flash_attn）
         attention_interface: Callable = ALL_ATTENTION_FUNCTIONS.get_interface(
@@ -542,9 +597,11 @@ class Llama4TextAttention(nn.Module):
             scaling=self.scaling,
             **kwargs,
         )
+        # attn_output: (batch, seq, num_q_heads, head_dim)
 
-        # (batch, seq, heads, head_dim) → (batch, seq, hidden_size)
+        # (batch, seq, num_q_heads, head_dim) -> (batch, seq, num_q_heads*head_dim) = (batch, seq, hidden_size)
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
+        # o_proj: (batch, seq, hidden_size) -> (batch, seq, hidden_size)
         attn_output = self.o_proj(attn_output)
         return attn_output, attn_weights
 
@@ -582,18 +639,20 @@ class Llama4TextDecoderLayer(GradientCheckpointingLayer):
         self.post_attention_layernorm = Llama4TextRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
     def forward(
-        self,
-        hidden_states: torch.Tensor,
-        attention_mask: torch.Tensor | None = None,
-        position_ids: torch.LongTensor | None = None,
-        past_key_values: Cache | None = None,
-        use_cache: bool | None = False,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
-        **kwargs: Unpack[FlashAttentionKwargs],
+            self,
+            hidden_states: torch.Tensor,
+            attention_mask: torch.Tensor | None = None,
+            position_ids: torch.LongTensor | None = None,
+            past_key_values: Cache | None = None,
+            use_cache: bool | None = False,
+            position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
+            **kwargs: Unpack[FlashAttentionKwargs],
     ) -> tuple[torch.FloatTensor, tuple[torch.FloatTensor, torch.FloatTensor] | None]:
+        # hidden_states: (batch, seq, hidden_size)
+
         # ---- 注意力子层 ----
-        residual = hidden_states
-        hidden_states = self.input_layernorm(hidden_states)  # Pre-Norm
+        residual = hidden_states                                       # (batch, seq, hidden_size)
+        hidden_states = self.input_layernorm(hidden_states)            # (batch, seq, hidden_size)  Pre-Norm
         attention_states, _ = self.self_attn(
             hidden_states=hidden_states,
             position_embeddings=position_embeddings,
@@ -602,16 +661,18 @@ class Llama4TextDecoderLayer(GradientCheckpointingLayer):
             use_cache=use_cache,
             **kwargs,
         )
-        hidden_states = residual + attention_states  # 残差连接
+        # attention_states: (batch, seq, hidden_size)
+        hidden_states = residual + attention_states                    # (batch, seq, hidden_size)  残差连接
 
         # ---- FFN/MoE 子层 ----
-        residual = hidden_states
-        hidden_states = self.post_attention_layernorm(hidden_states)  # Pre-Norm
+        residual = hidden_states                                       # (batch, seq, hidden_size)
+        hidden_states = self.post_attention_layernorm(hidden_states)   # (batch, seq, hidden_size)  Pre-Norm
         hidden_states = self.feed_forward(hidden_states)
         if self.is_moe_layer:
-            # MoE 返回 (output, router_logits)，只取 output
+            # MoE 返回 (output, router_logits)，output shape: (batch*seq, hidden_size)
             hidden_states, _ = hidden_states
-        hidden_states = residual + hidden_states.view(residual.shape)  # 残差连接
+        # view(residual.shape) 将 MoE 展平的 (batch*seq, hidden_size) 还原为 (batch, seq, hidden_size)
+        hidden_states = residual + hidden_states.view(residual.shape)  # (batch, seq, hidden_size)  残差连接
         return hidden_states
 
 
@@ -705,21 +766,21 @@ class Llama4TextModel(Llama4PreTrainedModel):
     @capture_outputs
     @auto_docstring
     def forward(
-        self,
-        input_ids: torch.LongTensor | None = None,
-        attention_mask: torch.Tensor | None = None,
-        position_ids: torch.LongTensor | None = None,
-        past_key_values: Cache | None = None,
-        inputs_embeds: torch.FloatTensor | None = None,
-        use_cache: bool | None = None,
-        **kwargs: Unpack[TransformersKwargs],
+            self,
+            input_ids: torch.LongTensor | None = None,
+            attention_mask: torch.Tensor | None = None,
+            position_ids: torch.LongTensor | None = None,
+            past_key_values: Cache | None = None,
+            inputs_embeds: torch.FloatTensor | None = None,
+            use_cache: bool | None = None,
+            **kwargs: Unpack[TransformersKwargs],
     ) -> tuple | BaseModelOutputWithPast:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
 
-        # token id → embedding 向量
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids.to(self.embed_tokens.weight.device))
+            # inputs_embeds: (batch, seq, hidden_size)
 
         # 推理时自动创建 KV cache
         if use_cache and past_key_values is None:
@@ -729,7 +790,7 @@ class Llama4TextModel(Llama4PreTrainedModel):
         if position_ids is None:
             past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
             position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device) + past_seen_tokens
-            position_ids = position_ids.unsqueeze(0)
+            position_ids = position_ids.unsqueeze(0)  # (1, seq) -> broadcast 到 (batch, seq)
 
         # 预先构建两种注意力掩码，按层类型分发
         # attention_mask 如果已是 dict（由 generate 预处理），则直接使用
@@ -746,12 +807,13 @@ class Llama4TextModel(Llama4PreTrainedModel):
                 "chunked_attention": create_chunked_causal_mask(**mask_kwargs),  # 分块因果掩码
             }
 
-        hidden_states = inputs_embeds
+        hidden_states = inputs_embeds  # (batch, seq, hidden_size)
 
         # 所有层共享同一套 RoPE 频率（一次计算，逐层传入）
         freq_cis = self.rotary_emb(hidden_states, position_ids)
+        # freq_cis: (batch, seq, head_dim/2) 复数
 
-        # 逐层前向传播，每层根据 layer_types 选对应掩码
+        # 逐层前向传播，每层输入输出均为 (batch, seq, hidden_size)
         for i, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
             hidden_states = decoder_layer(
                 hidden_states,
@@ -763,7 +825,7 @@ class Llama4TextModel(Llama4PreTrainedModel):
                 **kwargs,
             )
         # 最终 RMSNorm
-        hidden_states = self.norm(hidden_states)
+        hidden_states = self.norm(hidden_states)  # (batch, seq, hidden_size)
 
         return BaseModelOutputWithPast(
             last_hidden_state=hidden_states,
@@ -803,16 +865,16 @@ class Llama4ForCausalLM(Llama4PreTrainedModel, GenerationMixin):
     @can_return_tuple
     @auto_docstring
     def forward(
-        self,
-        input_ids: torch.LongTensor | None = None,
-        attention_mask: torch.Tensor | None = None,
-        position_ids: torch.LongTensor | None = None,
-        past_key_values: Cache | None = None,
-        inputs_embeds: torch.FloatTensor | None = None,
-        labels: torch.LongTensor | None = None,
-        use_cache: bool | None = None,
-        logits_to_keep: int | torch.Tensor = 0,
-        **kwargs: Unpack[TransformersKwargs],
+            self,
+            input_ids: torch.LongTensor | None = None,
+            attention_mask: torch.Tensor | None = None,
+            position_ids: torch.LongTensor | None = None,
+            past_key_values: Cache | None = None,
+            inputs_embeds: torch.FloatTensor | None = None,
+            labels: torch.LongTensor | None = None,
+            use_cache: bool | None = None,
+            logits_to_keep: int | torch.Tensor = 0,
+            **kwargs: Unpack[TransformersKwargs],
     ) -> tuple | CausalLMOutputWithPast:
         r"""
         labels: (batch, seq_len)，下一个 token 的 id。
@@ -832,11 +894,12 @@ class Llama4ForCausalLM(Llama4PreTrainedModel, GenerationMixin):
             **kwargs,
         )
 
-        hidden_states = outputs[0]  # (batch, seq_len, hidden_size)
+        hidden_states = outputs[0]  # (batch, seq, hidden_size)
 
         # 按需只计算部分位置的 logits（推理时节省显存）
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
-        logits = self.lm_head(hidden_states[:, slice_indices, :])  # (batch, seq_len, vocab_size)
+        # lm_head: (batch, seq_slice, hidden_size) -> (batch, seq_slice, vocab_size)
+        logits = self.lm_head(hidden_states[:, slice_indices, :])  # (batch, seq_slice, vocab_size)
 
         loss = None
         if labels is not None:

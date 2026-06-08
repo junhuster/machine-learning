@@ -1,6 +1,46 @@
 """
 inference.py — Llama4-Mini 独立推理/文本生成脚本
 
+========== 执行过程概览 ==========
+
+【普通采样模式（默认）】
+
+  1. 编码 prompt
+       用 tokenizer 把输入文本转成 token id 张量。
+
+  2. 调用 model.generate()
+       Llama4ForCausalLM 继承自 HuggingFace GenerationMixin，
+       generate() 内部自动完成以下步骤：
+         a. Prefill：把整个 prompt 一次性 forward，初始化 KV cache
+         b. 自回归解码循环：每步只 forward 一个新 token，KV cache 增量更新
+         c. 采样：按 temperature / top_p / top_k 截断后 multinomial 采样
+                  （temperature=0 / do_sample=False 时退化为贪心 argmax）
+         d. 重复惩罚：repetition_penalty > 1 时压低已出现 token 的概率
+         e. 遇到 eos token 或达到 max_new_tokens 时停止
+
+  3. 截取新生成部分
+       output_ids 包含 prompt + 生成内容，切掉 prompt 长度，
+       只取新生成的 token id，用 tokenizer 解码成文本。
+
+【Beam Search 模式（use_beam_search=True）】
+
+  beam search 同样由 model.generate() 内部处理，只需传入 num_beams 参数：
+
+  1. 编码 prompt，同上。
+
+  2. 调用 model.generate(num_beams=N, do_sample=False)
+       generate() 内部维护 N 条候选路径（beam），每步：
+         a. 对每条 beam 各 forward 一次，得到各自的 logits
+         b. 计算 log_prob，加上该 beam 的累计得分
+         c. 从所有 beam × vocab 的候选中选 top-N 继续扩展
+         d. 遇到 eos 的 beam 移入已完成列表
+       最终按归一化得分返回最优 beam 的生成文本。
+
+  注：与 deepseek 版手写 beam search 不同，这里完全依赖
+  HuggingFace 的高效实现，KV cache 在各 beam 间正确共享和复制。
+
+========================================
+
 可被训练脚本导入，也可单独运行：
 
     # 全部使用默认值
@@ -10,13 +50,17 @@ inference.py — Llama4-Mini 独立推理/文本生成脚本
     python inference.py --model_dir ./checkpoints --prompt "请介绍大语言模型"
 
     # 常用参数（其余参数有默认值，可省略）：
-    #   --model_dir       ./checkpoints
-    #   --config          ./config_mini.json（脚本同级目录）
-    #   --tokenizer       meta-llama/Llama-4-Scout-17B-16E
-    #   --prompt          你好，请介绍一下人工智能
-    #   --max_new_tokens  200
-    #   --temperature     0.8
-    #   --top_p           0.9
+    #   --model_dir           ./checkpoints
+    #   --config              ./config_mini.json（脚本同级目录）
+    #   --tokenizer           meta-llama/Llama-4-Scout-17B-16E
+    #   --prompt              你好，请介绍一下人工智能
+    #   --max_new_tokens      200
+    #   --temperature         0.8
+    #   --top_p               0.9
+    #   --top_k               0（0 表示不启用）
+    #   --repetition_penalty  1.0（1.0 无效果，推荐 1.1~1.3）
+    #   --use_beam_search     （flag，加上则启用 beam search）
+    #   --num_beams           4
 """
 
 import argparse
@@ -133,6 +177,10 @@ def generate(
     max_new_tokens: int = 200,
     temperature: float = 0.8,
     top_p: float = 0.9,
+    top_k: int = 0,
+    repetition_penalty: float = 1.0,
+    use_beam_search: bool = False,
+    num_beams: int = 4,
     device: Optional[torch.device] = None,
 ) -> str:
     """
@@ -145,8 +193,12 @@ def generate(
         tokenizer: HuggingFace tokenizer
         prompt: 输入文本字符串
         max_new_tokens: 最多生成的新 token 数
-        temperature: 采样温度（<=0 为贪心）
-        top_p: nucleus sampling 阈值
+        temperature: 采样温度（<=0 为贪心；beam search 模式下不生效）
+        top_p: nucleus sampling 阈值（beam search 模式下不生效）
+        top_k: 保留最高概率的 k 个 token，0 表示不启用（beam search 模式下不生效）
+        repetition_penalty: 重复惩罚系数（1.0 无效果，推荐 1.1~1.3）
+        use_beam_search: 是否启用 beam search（默认关闭）
+        num_beams: beam 数量（use_beam_search=True 时生效）
         device: 目标设备；None 则自动检测
     Returns:
         生成的文本字符串（不含 prompt）
@@ -167,17 +219,25 @@ def generate(
         input_ids = input_ids[:, -(max_position_embeddings - 1):]
 
     # 构建生成参数
-    # do_sample=True 时启用随机采样（temperature/top_p 生效）
-    # do_sample=False 时退化为贪心搜索（temperature<=0 时）
     gen_kwargs = dict(
         max_new_tokens=max_new_tokens,
-        do_sample=(temperature > 0),
         pad_token_id=tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id,
         eos_token_id=tokenizer.eos_token_id,
+        repetition_penalty=repetition_penalty,
     )
-    if temperature > 0:
-        gen_kwargs["temperature"] = temperature
-        gen_kwargs["top_p"] = top_p
+
+    if use_beam_search:
+        # beam search 模式：do_sample=False，由 num_beams 控制搜索宽度
+        gen_kwargs["do_sample"] = False
+        gen_kwargs["num_beams"] = num_beams
+    else:
+        # 普通采样模式
+        gen_kwargs["do_sample"] = (temperature > 0)
+        if temperature > 0:
+            gen_kwargs["temperature"] = temperature
+            gen_kwargs["top_p"] = top_p
+            if top_k > 0:
+                gen_kwargs["top_k"] = top_k
 
     # GenerationMixin.generate() 内部自动管理 KV cache，逐 token 自回归生成
     output_ids = model.generate(input_ids, **gen_kwargs)
@@ -201,6 +261,10 @@ def generate_chat(
     max_new_tokens: int = 200,
     temperature: float = 0.7,
     top_p: float = 0.9,
+    top_k: int = 0,
+    repetition_penalty: float = 1.0,
+    use_beam_search: bool = False,
+    num_beams: int = 4,
     device: Optional[torch.device] = None,
 ) -> str:
     """
@@ -213,6 +277,10 @@ def generate_chat(
         max_new_tokens: 最多生成的新 token 数
         temperature: 采样温度（<=0 为贪心）
         top_p: nucleus sampling 阈值
+        top_k: 保留最高概率的 k 个 token，0 表示不启用
+        repetition_penalty: 重复惩罚系数（1.0 无效果，推荐 1.1~1.3）
+        use_beam_search: 是否启用 beam search（默认关闭）
+        num_beams: beam 数量（use_beam_search=True 时生效）
         device: 目标设备；None 则自动检测
     Returns:
         assistant 回复的文本字符串
@@ -227,6 +295,10 @@ def generate_chat(
         max_new_tokens=max_new_tokens,
         temperature=temperature,
         top_p=top_p,
+        top_k=top_k,
+        repetition_penalty=repetition_penalty,
+        use_beam_search=use_beam_search,
+        num_beams=num_beams,
         device=device,
     )
 
@@ -250,6 +322,14 @@ def main():
     parser.add_argument("--max_new_tokens", type=int, default=200)
     parser.add_argument("--temperature", type=float, default=0.8)
     parser.add_argument("--top_p", type=float, default=0.9)
+    parser.add_argument("--top_k", type=int, default=0,
+                        help="top_k 截断，0 表示不启用")
+    parser.add_argument("--repetition_penalty", type=float, default=1.0,
+                        help="重复惩罚系数，>1 压低已出现 token，推荐 1.1~1.3")
+    parser.add_argument("--use_beam_search", action="store_true", default=False,
+                        help="启用 beam search（默认关闭）")
+    parser.add_argument("--num_beams", type=int, default=4,
+                        help="beam 数量（use_beam_search 时生效）")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -265,6 +345,10 @@ def main():
             raise FileNotFoundError("找不到 config_mini.json，请用 --config 指定路径")
 
     print(f"[inference] config={config_path}")
+    if args.use_beam_search:
+        print(f"[inference] 模式=beam search, num_beams={args.num_beams}")
+    else:
+        print(f"[inference] 模式=采样, temperature={args.temperature}, top_p={args.top_p}, top_k={args.top_k}, repetition_penalty={args.repetition_penalty}")
 
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, trust_remote_code=True)
     if tokenizer.pad_token_id is None:
@@ -284,6 +368,10 @@ def main():
             max_new_tokens=args.max_new_tokens,
             temperature=args.temperature,
             top_p=args.top_p,
+            top_k=args.top_k,
+            repetition_penalty=args.repetition_penalty,
+            use_beam_search=args.use_beam_search,
+            num_beams=args.num_beams,
             device=device,
         )
     else:
@@ -294,6 +382,10 @@ def main():
             max_new_tokens=args.max_new_tokens,
             temperature=args.temperature,
             top_p=args.top_p,
+            top_k=args.top_k,
+            repetition_penalty=args.repetition_penalty,
+            use_beam_search=args.use_beam_search,
+            num_beams=args.num_beams,
             device=device,
         )
 

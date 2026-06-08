@@ -30,7 +30,7 @@ class ModelArgs:
     如果显存不够，可以继续缩小dim、n_layers等参数。
     """
     # 词表
-    vocab_size: int = 102400          # DeepSeek-V3分词器词表大小，不要修改
+    vocab_size: int = 129280          # DeepSeek-V3分词器词表大小，不要修改
 
     # 模型尺寸（Mini默认值，比原16B小很多）
     dim: int = 512                    # 隐层维度（原16B是2048）
@@ -83,6 +83,7 @@ class RMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (..., dim) -> 输出 shape 不变，每个位置做 RMS 归一化后乘可学习权重
         return F.rms_norm(x, (self.dim,), self.weight, self.eps)
 
 
@@ -97,6 +98,7 @@ def precompute_freqs_cis(args: ModelArgs) -> torch.Tensor:
     base = args.rope_theta
     factor = args.rope_factor
 
+    # freqs: (qk_rope_head_dim//2,)  每个旋转维度的基础频率
     freqs = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.float32) / dim))
 
     # YaRN长度外推（仅当序列长度超过original_seq_len且rope_factor>1时启用）
@@ -119,8 +121,11 @@ def precompute_freqs_cis(args: ModelArgs) -> torch.Tensor:
         smooth = 1 - linear_ramp_factor(low, high, dim // 2)
         freqs = freqs / factor * (1 - smooth) + freqs * smooth
 
+    # t: (seqlen,)   freqs: (dim//2,)
     t = torch.arange(seqlen)
+    # outer积: (seqlen, dim//2)  每个位置和每个频率的乘积
     freqs = torch.outer(t, freqs)
+    # 转为复数形式: (seqlen, dim//2)  复数模为1，辐角为freqs
     freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
     return freqs_cis
 
@@ -132,8 +137,14 @@ def apply_rotary_emb(x: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
     freqs_cis: (seq_len, head_dim//2) 复数
     """
     dtype = x.dtype
+    # x: (..., seq_len, n_heads, head_dim)
+    # -> view: (..., seq_len, n_heads, head_dim//2, 2)
+    # -> view_as_complex: (..., seq_len, n_heads, head_dim//2)  复数
     x = torch.view_as_complex(x.float().view(*x.shape[:-1], -1, 2))
+    # freqs_cis: (seq_len, head_dim//2) -> (1, seq_len, 1, head_dim//2)  broadcast到所有batch和head
     freqs_cis = freqs_cis.view(1, x.size(1), 1, x.size(-1))
+    # 复数乘法完成旋转，view_as_real还原实数: (..., seq_len, n_heads, head_dim//2, 2)
+    # flatten(3): (..., seq_len, n_heads, head_dim)
     y = torch.view_as_real(x * freqs_cis).flatten(3)
     return y.to(dtype)
 
@@ -176,7 +187,7 @@ class MLA(nn.Module):
             self.kv_lora_rank,
             args.n_heads * (self.qk_nope_head_dim + self.v_head_dim),
             bias=False,
-        )
+            )
 
         # 输出投影
         self.wo = nn.Linear(args.n_heads * self.v_head_dim, args.dim, bias=False)
@@ -200,64 +211,84 @@ class MLA(nn.Module):
         )
 
     def forward(
-        self,
-        x: torch.Tensor,
-        freqs_cis: torch.Tensor,
-        mask: Optional[torch.Tensor] = None,
-        start_pos: int = 0,
-        use_cache: bool = False,
+            self,
+            x: torch.Tensor,
+            freqs_cis: torch.Tensor,
+            mask: Optional[torch.Tensor] = None,
+            start_pos: int = 0,
+            use_cache: bool = False,
     ) -> torch.Tensor:
         """
         Args:
-            x: (batch, seq_len, dim)
-            freqs_cis: 位置编码复数，shape=(seq_len, qk_rope_head_dim//2)
-            mask: 因果掩码，shape=(seq_len, kv_len)，上三角为-inf
+            x: (B, S, dim)   B=batch, S=seq_len
+            freqs_cis: (S, qk_rope_head_dim//2) 复数位置编码
+            mask: (S, T) 因果掩码，上三角为-inf；T=key长度（推理时 T=start_pos+S）
             start_pos: 推理时KV cache的写入起始位置
-            use_cache: True=推理模式，使用并更新KV cache；False=训练模式
+            use_cache: True=推理模式；False=训练模式
         Returns:
-            输出tensor，shape同x
+            (B, S, dim)  shape与输入x相同
         """
         bsz, seqlen, _ = x.size()
         end_pos = start_pos + seqlen
 
         # --- Query ---
         if self.q_lora_rank == 0:
-            q = self.wq(x)
+            # wq: (dim) -> (n_heads * qk_head_dim)
+            q = self.wq(x)                                          # (B, S, n_heads * qk_head_dim)
         else:
-            q = self.wq_b(self.q_norm(self.wq_a(x)))
-        q = q.view(bsz, seqlen, self.n_heads, self.qk_head_dim)
+            # 低秩分解：dim -> q_lora_rank -> n_heads * qk_head_dim
+            q = self.wq_b(self.q_norm(self.wq_a(x)))               # (B, S, n_heads * qk_head_dim)
+        q = q.view(bsz, seqlen, self.n_heads, self.qk_head_dim)    # (B, S, H, qk_head_dim)
+        # 拆分为不含位置编码和含位置编码两部分
         q_nope, q_pe = torch.split(q, [self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1)
-        q_pe = apply_rotary_emb(q_pe, freqs_cis)
-        q = torch.cat([q_nope, q_pe], dim=-1)  # (B, S, H, qk_head_dim)
+        # q_nope: (B, S, H, qk_nope_head_dim)
+        # q_pe:   (B, S, H, qk_rope_head_dim)
+        q_pe = apply_rotary_emb(q_pe, freqs_cis)                   # (B, S, H, qk_rope_head_dim) 旋转后
+        q = torch.cat([q_nope, q_pe], dim=-1)                      # (B, S, H, qk_head_dim)
 
         # --- Key/Value ---
-        kv = self.wkv_a(x)
+        # wkv_a 将 dim 压缩到低秩潜变量 + rope分量
+        kv = self.wkv_a(x)                                          # (B, S, kv_lora_rank + qk_rope_head_dim)
         kv_latent, k_pe = torch.split(kv, [self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)
-        k_pe = apply_rotary_emb(k_pe.unsqueeze(2), freqs_cis)  # (B, S, 1, rope_dim)
+        # kv_latent: (B, S, kv_lora_rank)  KV的低秩潜变量
+        # k_pe:      (B, S, qk_rope_head_dim)  K的RoPE分量（所有head共享）
 
-        kv_full = self.wkv_b(self.kv_norm(kv_latent))
+        k_pe = apply_rotary_emb(k_pe.unsqueeze(2), freqs_cis)      # (B, S, 1, qk_rope_head_dim) 旋转后
+
+        # wkv_b 将低秩潜变量展开为完整的 K_nope 和 V
+        kv_full = self.wkv_b(self.kv_norm(kv_latent))              # (B, S, H * (qk_nope_head_dim + v_head_dim))
         kv_full = kv_full.view(bsz, seqlen, self.n_heads, self.qk_nope_head_dim + self.v_head_dim)
+        # (B, S, H, qk_nope_head_dim + v_head_dim)
         k_nope, v = torch.split(kv_full, [self.qk_nope_head_dim, self.v_head_dim], dim=-1)
+        # k_nope: (B, S, H, qk_nope_head_dim)
+        # v:      (B, S, H, v_head_dim)
+
+        # k_pe expand: (B, S, 1, qk_rope_head_dim) -> (B, S, H, qk_rope_head_dim)
         k = torch.cat([k_nope, k_pe.expand(-1, -1, self.n_heads, -1)], dim=-1)  # (B, S, H, qk_head_dim)
 
         if use_cache:
             # 写入cache，读取历史+当前
-            self.k_cache[:bsz, start_pos:end_pos] = k
-            self.v_cache[:bsz, start_pos:end_pos] = v
-            k_use = self.k_cache[:bsz, :end_pos]
-            v_use = self.v_cache[:bsz, :end_pos]
+            self.k_cache[:bsz, start_pos:end_pos] = k              # k_cache: (max_B, max_S, H, qk_head_dim)
+            self.v_cache[:bsz, start_pos:end_pos] = v              # v_cache: (max_B, max_S, H, v_head_dim)
+            k_use = self.k_cache[:bsz, :end_pos]                   # (B, T, H, qk_head_dim)  T=end_pos
+            v_use = self.v_cache[:bsz, :end_pos]                   # (B, T, H, v_head_dim)
         else:
-            k_use = k
-            v_use = v
+            k_use = k                                               # (B, S, H, qk_head_dim)
+            v_use = v                                               # (B, S, H, v_head_dim)
 
         # --- Attention ---
-        # scores: (B, S, H, T)  S=query len, T=key/value len
+        # einsum: q(B,S,H,d) x k(B,T,H,d) -> scores(B,S,H,T)
         scores = torch.einsum("bshd,bthd->bsht", q, k_use) * self.softmax_scale
+        # scores: (B, S, H, T)
         if mask is not None:
-            scores = scores + mask.unsqueeze(1)  # broadcast over heads
+            scores = scores + mask.unsqueeze(1)                     # mask(S,T) -> (1,S,1,T) broadcast到所有batch和head
         scores = scores.softmax(dim=-1, dtype=torch.float32).to(x.dtype)
-        out = torch.einsum("bsht,bthd->bshd", scores, v_use)
-        out = self.wo(out.flatten(2))
+        # scores: (B, S, H, T)  每个query位置对所有key位置的注意力权重
+
+        # einsum: scores(B,S,H,T) x v(B,T,H,d) -> out(B,S,H,v_head_dim)
+        out = torch.einsum("bsht,bthd->bshd", scores, v_use)       # (B, S, H, v_head_dim)
+        # flatten heads: (B, S, H * v_head_dim) -> wo投影回dim
+        out = self.wo(out.flatten(2))                               # (B, S, dim)
         return out
 
 
@@ -273,7 +304,12 @@ class MLP(nn.Module):
         self.w3 = nn.Linear(dim, inter_dim, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.w2(F.silu(self.w1(x)) * self.w3(x))
+        # x: (..., dim)
+        # w1(x): (..., inter_dim)  gate分支
+        # w3(x): (..., inter_dim)  value分支
+        # silu(w1(x)) * w3(x): (..., inter_dim)  SwiGLU激活
+        # w2(...): (..., dim)  投影回原始维度
+        return self.w2(F.silu(self.w1(x)) * self.w3(x))            # (..., dim)
 
 
 # ---------------------------------------------------------------------------
@@ -296,35 +332,42 @@ class Gate(nn.Module):
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
-            x: (N, dim)  N = batch * seq_len
+            x: (N, dim)  N = batch * seq_len（所有token展平）
         Returns:
             weights: (N, topk) 路由权重
             indices: (N, topk) 选中的专家索引
         """
-        scores = F.linear(x, self.weight)  # (N, n_experts)
+        # weight: (n_experts, dim)  linear等价于 x @ weight.T
+        scores = F.linear(x, self.weight)                           # (N, n_experts)
 
         if self.score_func == "softmax":
-            scores = scores.softmax(dim=-1, dtype=torch.float32)
+            scores = scores.softmax(dim=-1, dtype=torch.float32)    # (N, n_experts) 归一化概率
         else:
-            scores = scores.sigmoid()
+            scores = scores.sigmoid()                               # (N, n_experts) 独立概率
 
-        original_scores = scores
+        original_scores = scores                                    # 保留原始scores用于后续取权重
 
         if self.n_groups > 1:
-            scores_grouped = scores.view(x.size(0), self.n_groups, -1)
-            group_scores = scores_grouped.amax(dim=-1)
-            group_indices = group_scores.topk(self.topk_groups, dim=-1)[1]
+            # 按组路由：将专家分成n_groups组，先选topk_groups个组，再从这些组里选专家
+            scores_grouped = scores.view(x.size(0), self.n_groups, -1)   # (N, n_groups, experts_per_group)
+            group_scores = scores_grouped.amax(dim=-1)                    # (N, n_groups) 每组最大score
+            group_indices = group_scores.topk(self.topk_groups, dim=-1)[1]# (N, topk_groups) 选中的组索引
             group_mask = torch.ones(x.size(0), self.n_groups, dtype=torch.bool, device=x.device)
-            group_mask.scatter_(1, group_indices, False)
+            group_mask.scatter_(1, group_indices, False)                  # 选中的组mask为False（不屏蔽）
+            # 未选中组的专家score设为-inf，使其不会被topk选中
             scores = scores_grouped.masked_fill(group_mask.unsqueeze(-1), float("-inf")).flatten(1)
+            # scores: (N, n_experts)  未选中组的专家score=-inf
 
-        indices = torch.topk(scores, self.topk, dim=-1)[1]
-        weights = original_scores.gather(1, indices)
+        # 从（可能被mask的）scores中选topk个专家索引
+        indices = torch.topk(scores, self.topk, dim=-1)[1]          # (N, topk)
+        # 用原始scores取权重，避免-inf影响权重值
+        weights = original_scores.gather(1, indices)                # (N, topk)
 
         if self.score_func == "sigmoid":
-            weights = weights / (weights.sum(dim=-1, keepdim=True) + 1e-9)
+            # sigmoid输出不归一化，手动归一化使权重之和为1
+            weights = weights / (weights.sum(dim=-1, keepdim=True) + 1e-9)  # (N, topk)
 
-        weights = (weights * self.route_scale).to(x.dtype)
+        weights = (weights * self.route_scale).to(x.dtype)          # (N, topk)
         return weights, indices
 
 
@@ -338,7 +381,9 @@ class Expert(nn.Module):
         self.w3 = nn.Linear(dim, inter_dim, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.w2(F.silu(self.w1(x)) * self.w3(x))
+        # x: (n_tokens, dim)  只包含路由到本专家的token
+        # 与MLP完全相同的SwiGLU结构
+        return self.w2(F.silu(self.w1(x)) * self.w3(x))            # (n_tokens, dim)
 
 
 class MoE(nn.Module):
@@ -357,21 +402,28 @@ class MoE(nn.Module):
         self.shared_experts = MLP(args.dim, args.n_shared_experts * args.moe_inter_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        shape = x.size()
-        x_flat = x.view(-1, self.dim)  # (N, dim)
+        shape = x.size()                                            # (B, S, dim)
+        x_flat = x.view(-1, self.dim)                              # (N, dim)  N=B*S
 
-        weights, indices = self.gate(x_flat)  # (N, topk), (N, topk)
-        y = torch.zeros_like(x_flat)
+        weights, indices = self.gate(x_flat)                       # weights: (N, topk), indices: (N, topk)
+        y = torch.zeros_like(x_flat)                               # (N, dim)  累加各专家输出
 
+        # 统计每个专家被路由到的token数，跳过为0的专家（节省计算）
         counts = torch.bincount(indices.flatten(), minlength=self.n_routed_experts).tolist()
         for i in range(self.n_routed_experts):
             if counts[i] == 0:
                 continue
-            idx, top = torch.where(indices == i)
-            y[idx] += self.experts[i](x_flat[idx]) * weights[idx, top, None]
+            # idx: 被路由到专家i的token在N维度的下标
+            # top: 该token选择专家i时对应的topk位置（用于取权重）
+            idx, top = torch.where(indices == i)                   # idx: (n_i,)  top: (n_i,)
+            # x_flat[idx]: (n_i, dim)  取出路由到专家i的token
+            # experts[i]输出: (n_i, dim)
+            # weights[idx, top]: (n_i,) -> unsqueeze(-1): (n_i, 1)  路由权重加权
+            y[idx] += self.experts[i](x_flat[idx]) * weights[idx, top, None]  # (n_i, dim)
 
-        z = self.shared_experts(x_flat)
-        return (y + z).view(shape)
+        # 共享专家对所有token计算
+        z = self.shared_experts(x_flat)                            # (N, dim)
+        return (y + z).view(shape)                                 # (B, S, dim)
 
 
 # ---------------------------------------------------------------------------
@@ -390,15 +442,18 @@ class Block(nn.Module):
         self.ffn_norm = RMSNorm(args.dim)
 
     def forward(
-        self,
-        x: torch.Tensor,
-        freqs_cis: torch.Tensor,
-        mask: Optional[torch.Tensor] = None,
-        start_pos: int = 0,
-        use_cache: bool = False,
+            self,
+            x: torch.Tensor,
+            freqs_cis: torch.Tensor,
+            mask: Optional[torch.Tensor] = None,
+            start_pos: int = 0,
+            use_cache: bool = False,
     ) -> torch.Tensor:
-        x = x + self.attn(self.attn_norm(x), freqs_cis, mask, start_pos, use_cache)
-        x = x + self.ffn(self.ffn_norm(x))
+        # x: (B, S, dim)
+        # attn_norm(x): (B, S, dim) -> attn输出: (B, S, dim) -> 残差相加
+        x = x + self.attn(self.attn_norm(x), freqs_cis, mask, start_pos, use_cache)  # (B, S, dim)
+        # ffn_norm(x): (B, S, dim) -> ffn输出: (B, S, dim) -> 残差相加
+        x = x + self.ffn(self.ffn_norm(x))                         # (B, S, dim)
         return x
 
 
@@ -449,47 +504,51 @@ class Transformer(nn.Module):
                 layer.attn.v_cache.zero_()
 
     def forward(
-        self,
-        tokens: torch.Tensor,
-        start_pos: int = 0,
-        use_cache: bool = False,
+            self,
+            tokens: torch.Tensor,
+            start_pos: int = 0,
+            use_cache: bool = False,
     ) -> torch.Tensor:
         """
         Args:
-            tokens: token id张量，shape=(batch, seq_len)
+            tokens: (B, S)  token id
             start_pos: KV cache写入起始位置（推理时使用）
-            use_cache: True=推理模式（返回最后位置logits）；False=训练模式（返回全序列logits）
+            use_cache: True=推理模式；False=训练模式
         Returns:
-            训练模式: (batch, seq_len, vocab_size)
-            推理模式: (batch, vocab_size)  仅最后一个位置
+            训练模式: (B, S, vocab_size)
+            推理模式: (B, vocab_size)  仅最后一个位置
         """
         seqlen = tokens.size(1)
-        h = self.embed(tokens)
+        # embed: (B, S) -> (B, S, dim)
+        h = self.embed(tokens)                                      # (B, S, dim)
 
+        # freqs_cis: (S, qk_rope_head_dim//2)  取当前序列位置的编码
         freqs_cis = self.freqs_cis[start_pos: start_pos + seqlen]
 
         # 因果掩码（序列长度>1时才需要）
         mask = None
         if seqlen > 1:
+            # 上三角（不含对角线）为-inf，使每个位置只能看到自己及之前的token
             mask = torch.full((seqlen, seqlen), float("-inf"), device=tokens.device)
-            mask = torch.triu(mask, diagonal=1)
+            mask = torch.triu(mask, diagonal=1)                     # (S, S)
             # 推理时prefill：key来自cache（包含历史），需要扩展mask
             if use_cache and start_pos > 0:
                 # query位置 [start_pos, end_pos)，key位置 [0, end_pos)
                 # 只需要对query内部的因果约束，对历史key全部可见
                 prefix_mask = torch.zeros(seqlen, start_pos, device=tokens.device)
-                mask = torch.cat([prefix_mask, mask], dim=1)
+                mask = torch.cat([prefix_mask, mask], dim=1)        # (S, start_pos+S)
 
+        # 逐层前向：每层输入输出均为 (B, S, dim)
         for layer in self.layers:
-            h = layer(h, freqs_cis, mask, start_pos, use_cache)
+            h = layer(h, freqs_cis, mask, start_pos, use_cache)    # (B, S, dim)
 
-        h = self.norm(h)
+        h = self.norm(h)                                            # (B, S, dim)
 
         if use_cache:
             # 推理模式：只返回最后一个token位置的logits
-            logits = self.head(h[:, -1, :])
+            logits = self.head(h[:, -1, :])                        # (B, vocab_size)
         else:
             # 训练模式：返回所有位置的logits
-            logits = self.head(h)
+            logits = self.head(h)                                   # (B, S, vocab_size)
 
         return logits

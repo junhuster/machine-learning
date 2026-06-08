@@ -44,7 +44,7 @@ from dataset import PretrainDataset, collate_pretrain
 
 DEFAULTS = dict(
     # 数据
-    data_path="./data/train.jsonl",
+    data_path="/home/ubuntu/work/data/llm-data/train_data/zh/monkey/pretrain_data/monkey_pretrain.jsonl",
     max_seq_len=256,                    # 训练序列长度（和数据裁剪长度对齐）
 
     # 模型配置
@@ -54,22 +54,22 @@ DEFAULTS = dict(
     tokenizer="deepseek-ai/DeepSeek-V3",
 
     # Checkpoint
-    model_dir="./checkpoints",
+    model_dir="/home/ubuntu/work/data/llm-data/pretrained_model/deepseek-v3-mini/32G/",
     save_steps=500,                     # 每N步保存一次
     max_ckpts=2,                        # 最多保留N个最新checkpoint
 
     # 训练
     num_epochs=1,
     batch_size=8,
-    grad_accum_steps=1,                 # 梯度累积步数；1=不累积，>1=累积N步后更新一次参数
-    lr=3e-4,                            # 余弦退火起始lr
+    grad_accum_steps=4,                 # 梯度累积步数；1=不累积，>1=累积N步后更新一次参数
+    lr=2e-4,                            # 余弦退火起始lr
     lr_min=1e-5,                        # 余弦退火最低lr
     weight_decay=0.01,
     grad_clip=1.0,                      # 梯度裁剪阈值
 
     # 日志
     log_steps=100,                      # 每N步打印一次日志
-    log_dir="./logs",
+    log_dir="/home/ubuntu/work/logs/deepseek-v3-mini/",
     start_text="人工智能的发展历史",    # 周期性推理用的提示词
     gen_max_tokens=50,                  # 日志推理最多生成token数
     gen_temperature=0.8,                # 日志推理采样温度
@@ -85,7 +85,6 @@ def setup_logger(log_dir: str) -> logging.Logger:
     配置日志：
     - 写入log_dir/train.log，每天午夜轮转
     - 旧日志文件名格式：train.log.YYYY-MM-DD
-    - 同时输出到控制台
     """
     os.makedirs(log_dir, exist_ok=True)
     logger = logging.getLogger("deepseek_mini_train")
@@ -112,11 +111,7 @@ def setup_logger(log_dir: str) -> logging.Logger:
     file_handler.suffix = "%Y-%m-%d"
     file_handler.setFormatter(fmt)
 
-    stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(fmt)
-
     logger.addHandler(file_handler)
-    logger.addHandler(stream_handler)
     return logger
 
 
@@ -232,7 +227,7 @@ def train(args):
     cfg["max_batch_size"] = args.batch_size
 
     model_args = ModelArgs(**cfg)
-    model = Transformer(model_args).to(device=device, dtype=torch.float16)
+    model = Transformer(model_args).to(device=device)
 
     param_count = sum(p.numel() for p in model.parameters())
     logger.info(f"模型参数量: {param_count / 1e6:.2f}M")
@@ -246,7 +241,7 @@ def train(args):
         shuffle=True,
         collate_fn=collate_pretrain,
         drop_last=True,
-        num_workers=0,
+        num_workers=4,
         pin_memory=(device.type == "cuda"),
     )
     steps_per_epoch = len(loader)
@@ -293,6 +288,7 @@ def train(args):
     model.train()
 
     for epoch in range(start_epoch, args.num_epochs):
+        step_t0 = time.time()
         for batch_idx, batch in enumerate(loader):
             # 断点续训跳步：global_step是optimizer更新次数，
             # 对应的batch起始位置是 start_step * grad_accum_steps
@@ -305,7 +301,6 @@ def train(args):
 
             if is_first_in_accum:
                 optimizer.zero_grad()
-                step_t0 = time.time()
                 accum_loss = 0.0
 
             batch = batch.to(device)        # (B, max_seq_len+1)
@@ -335,14 +330,14 @@ def train(args):
                 scheduler.step()  # 每个optimizer step更新lr
 
                 global_step += 1
-                step_time_accum += time.time() - step_t0
+                step_time_accum = (time.time() - step_t0) / 60
                 steps_this_run += 1
 
                 # ---- 打印日志 ----
                 if global_step % args.log_steps == 0:
                     avg_step_time = step_time_accum / steps_this_run
                     remaining_steps = total_steps - global_step
-                    eta_minutes = avg_step_time * remaining_steps / 60.0
+                    eta_minutes = avg_step_time * remaining_steps
                     current_lr = scheduler.get_last_lr()[0]
 
                     logger.info(
@@ -350,6 +345,7 @@ def train(args):
                         f"step={global_step}/{total_steps} | "
                         f"loss={accum_loss:.4f} | "
                         f"lr={current_lr:.2e} | "
+                        f"time_used={step_time_accum:.2f}min | "
                         f"ETA={eta_minutes:.1f}min"
                     )
 

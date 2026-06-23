@@ -1,0 +1,68 @@
+# ============================================================
+# rec_tf_int8_quant 全局配置
+# ============================================================
+
+# ---------- 数据 ----------
+data:
+  num_train_samples: 50000
+  num_val_samples:   10000
+  num_sparse_fields: 10
+  sparse_vocab_size: 10000
+  emb_dim: 16
+  num_dense_features: 13
+  batch_size: 512
+
+# ---------- 模型 ----------
+model:
+  emb_dim: 16
+  num_sparse_fields: 10
+  num_dense_features: 13
+  num_experts: 3
+  expert_hidden_dims: [256, 128, 64]
+  gate_hidden_dim: 64
+  tower_hidden_dims: [64, 32]
+  num_tasks: 2
+  dropout: 0.1
+  use_bn: true
+
+# ---------- 训练 ----------
+train:
+  epochs: 5
+  lr: 0.001
+  seed: 42
+  saved_model_dir: "checkpoints/saved_model"
+  checkpoint_path: "checkpoints/best_weights.h5"
+
+# ---------- 导出 ----------
+export:
+  onnx_path: "checkpoints/model.onnx"
+  opset: 13
+
+# ---------- 量化 ----------
+quantize:
+  # 选择量化后端: "onnxruntime" 或 "tensorrt"
+  backend: "onnxruntime"
+
+  calibration_samples: 2000
+
+  # onnxruntime 专用
+  onnx_int8_path: "checkpoints/model_int8.onnx"
+
+  # tensorrt 专用
+  trt_engine_path: "checkpoints/model_int8.trt"
+  trt_max_batch_size: 512
+  trt_workspace_mb: 1024
+
+  # 搜索阈值
+  single_layer_auc_drop_threshold: 0.002
+  group_auc_drop_threshold:        0.003
+  final_auc_drop_threshold:        0.005
+
+  # 量化搜索报告
+  report_path: "checkpoints/quant_report.json"
+
+# ---------- 日志 ----------
+logging:
+  level: "INFO"
+  format: "%(asctime)s [%(levelname)s] %(name)s - %(message)s"
+  log_file: "logs/run.log"

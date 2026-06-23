@@ -14,12 +14,14 @@ inference.py — DeepSeek-Mini独立推理/文本生成脚本
 import argparse
 import json
 import os
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # 完全禁用 TF 日志
 from pathlib import Path
 from typing import Optional
-
+from contextlib import nullcontext
 import torch
 from transformers import AutoTokenizer
-
+import time
 from model import ModelArgs, Transformer
 
 
@@ -34,6 +36,12 @@ def _ckpt_step(path: Path) -> int:
     except ValueError:
         return -1
 
+def _ckpt_sft_step(path: Path) -> int:
+    """从 ckpt_step00012345.pt 文件名中解析出步数整数，解析失败返回-1"""
+    try:
+        return int(path.stem.replace("ckpt_sft_step", ""))
+    except ValueError:
+        return -1
 
 def _find_latest_checkpoint(model_dir: str) -> Optional[str]:
     """在model_dir中找步数最大的checkpoint，返回路径字符串，没有则返回None"""
@@ -41,6 +49,14 @@ def _find_latest_checkpoint(model_dir: str) -> Optional[str]:
     if not p.exists():
         return None
     ckpts = sorted(p.glob("ckpt_step*.pt"), key=_ckpt_step)
+    return str(ckpts[-1]) if ckpts else None
+
+def _find_latest_checkpoint_sft(model_dir: str) -> Optional[str]:
+    """在model_dir中找步数最大的checkpoint，返回路径字符串，没有则返回None"""
+    p = Path(model_dir)
+    if not p.exists():
+        return None
+    ckpts = sorted(p.glob("ckpt_sft_step*.pt"), key=_ckpt_sft_step)
     return str(ckpts[-1]) if ckpts else None
 
 
@@ -63,12 +79,13 @@ def load_model(
         cfg = json.load(f)
     args = ModelArgs(**cfg)
 
-    model = Transformer(args).to(device=device, dtype=torch.float16)
+    ## fix，训练是混合精度训练的，推理加载时，这里不要指定fp16
+    model = Transformer(args).to(device=device)
 
     ckpt_path = _find_latest_checkpoint(model_dir)
     if ckpt_path is not None:
         print(f"[inference] 加载checkpoint: {ckpt_path}")
-        ckpt = torch.load(ckpt_path, map_location=device)
+        ckpt = torch.load(ckpt_path, map_location=device, weights_only=True)
         model.load_state_dict(ckpt["model_state_dict"], strict=False)
     else:
         print("[inference] 未找到checkpoint，使用随机初始化权重")
@@ -76,6 +93,36 @@ def load_model(
     model.eval()
     return model
 
+def load_model_with_path(
+    config_path: str,
+    model_path: str,
+    device: torch.device,
+) -> Transformer:
+    """
+    从config文件 + 最新checkpoint加载模型，返回eval模式的Transformer。
+
+    Args:
+        config_path: config_mini.json路径
+        model_dir: checkpoint目录（存放ckpt_step*.pt）
+        device: 目标设备
+    Returns:
+        加载好权重的Transformer，已设置为eval()模式
+    """
+    with open(config_path) as f:
+        cfg = json.load(f)
+    args = ModelArgs(**cfg)
+
+    model = Transformer(args).to(device=device)
+
+    if model_path is not None:
+        print(f"[inference] 加载checkpoint: {model_path}")
+        ckpt = torch.load(model_path, map_location=device, weights_only=True)
+        model.load_state_dict(ckpt["model_state_dict"], strict=False)
+    else:
+        print("[inference] 未找到checkpoint，使用随机初始化权重")
+
+    model.eval()
+    return model
 
 # ---------------------------------------------------------------------------
 # Sampling
@@ -157,11 +204,14 @@ def generate(
     prompt_len = len(input_ids)
     prompt_tensor = torch.tensor(input_ids, dtype=torch.long, device=device).unsqueeze(0)  # (1, prompt_len)
 
+    ### fix 这里的ctx要和训练保持一致，否则生成的文字效果会因为精度问题变得完全没法理解
+    ctx = (nullcontext() if device.type == "cpu" else torch.amp.autocast(device_type=device.type, dtype=torch.float16))
     # 清零KV cache
     model.reset_kv_cache()
 
     # Prefill阶段：处理整个prompt，获取第一个生成token的logits
-    logits = model(prompt_tensor, start_pos=0, use_cache=True)  # (1, vocab_size)
+    with ctx:
+        logits = model(prompt_tensor, start_pos=0, use_cache=True)  # (1, vocab_size)
 
     generated_ids = []
     eos_id = tokenizer.eos_token_id
@@ -183,7 +233,8 @@ def generate(
 
         cur_token = torch.tensor([[next_token_id]], dtype=torch.long, device=device)
         # start_pos = cur_pos - 1：当前token在序列中的位置
-        logits = model(cur_token, start_pos=cur_pos - 1, use_cache=True)  # (1, vocab_size)
+        with ctx:
+            logits = model(cur_token, start_pos=cur_pos - 1, use_cache=True)  # (1, vocab_size)
 
         next_token_id = _sample(logits[0], temperature=temperature, top_p=top_p)
         if next_token_id == eos_id:
@@ -237,21 +288,25 @@ def generate_chat(
 # ---------------------------------------------------------------------------
 # CLI入口
 # ---------------------------------------------------------------------------
+pretrain_prompt_datas = [
+    '你好啊',
+    'iphone 14',
+]
 
 def main():
     parser = argparse.ArgumentParser(description="DeepSeek-Mini文本生成")
-    parser.add_argument("--model_dir", type=str, default="./checkpoints",
+    parser.add_argument("--model_dir", type=str, default="/home/ubuntu/work/data/llm-data/pretrained_model/deepseek-v3-mini/32G/",
                         help="checkpoint目录（含ckpt_step*.pt和config_mini.json）")
     parser.add_argument("--config", type=str, default=None,
                         help="config JSON路径（默认：model_dir/config_mini.json或脚本同级目录）")
     parser.add_argument("--tokenizer", type=str, default="deepseek-ai/DeepSeek-V3",
                         help="HuggingFace tokenizer名称或本地路径")
-    parser.add_argument("--prompt", type=str, default="你好，请介绍一下人工智能",
+    parser.add_argument("--prompt", type=str, default="人工智能的发展历史",
                         help="生成提示词")
     parser.add_argument("--chat", action="store_true",
                         help="使用chat模式（SFT模型），将prompt作为user消息")
-    parser.add_argument("--max_new_tokens", type=int, default=200)
-    parser.add_argument("--temperature", type=float, default=0.8)
+    parser.add_argument("--max_new_tokens", type=int, default=50)
+    parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--top_p", type=float, default=0.9)
     args = parser.parse_args()
 
@@ -275,10 +330,6 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, trust_remote_code=True)
     model = load_model(config_path, args.model_dir, device)
 
-    print("\n===== Prompt =====")
-    print(args.prompt)
-    print("\n===== Generated =====")
-
     if args.chat:
         messages = [{"role": "user", "content": args.prompt}]
         result = generate_chat(
@@ -291,15 +342,19 @@ def main():
             device=device,
         )
     else:
-        result = generate(
-            model=model,
-            tokenizer=tokenizer,
-            prompt=args.prompt,
-            max_new_tokens=args.max_new_tokens,
-            temperature=args.temperature,
-            top_p=args.top_p,
-            device=device,
-        )
+        for i in range(len(pretrain_prompt_datas)):
+            start = time.time()
+            result = generate(
+                model=model,
+                tokenizer=tokenizer,
+                prompt=pretrain_prompt_datas[i],
+                max_new_tokens=args.max_new_tokens,
+                temperature=args.temperature,
+                top_p=args.top_p,
+                device=device,
+            )
+            elaps = time.time() - start
+            print(f"\nQA: {pretrain_prompt_datas[i]} => infer_cost: {elaps:.3f} sec\nAI answer: {result}\n")
 
     print(result)
 

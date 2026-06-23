@@ -82,7 +82,7 @@ import torch
 from transformers import AutoTokenizer
 
 from model import ModelArgs, Transformer
-from inference import _ckpt_step, _find_latest_checkpoint, load_model
+from inference import _ckpt_step, _find_latest_checkpoint, load_model_with_path
 
 
 # ---------------------------------------------------------------------------
@@ -501,17 +501,18 @@ def generate_chat(
 
 def main():
     parser = argparse.ArgumentParser(description="DeepSeek-Mini文本生成（增强版）")
-    parser.add_argument("--model_dir", type=str, default="./checkpoints")
+    parser.add_argument("--model_dir", type=str, default="/home/ubuntu/work/data/llm-data/pretrained_model/deepseek-v3-mini/32G/release/")
+    parser.add_argument("--model_path", type=str, default="/home/ubuntu/work/data/llm-data/pretrained_model/deepseek-v3-mini/32G/release/deepseek-v3-mini_400M.pt")    
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--tokenizer", type=str, default="deepseek-ai/DeepSeek-V3")
-    parser.add_argument("--prompt", type=str, default="你好，请介绍一下人工智能")
+    parser.add_argument("--prompt", type=str, default="中国的首都是")
     parser.add_argument("--chat", action="store_true", help="使用 chat 模式")
     parser.add_argument("--max_new_tokens", type=int, default=200)
     # 普通采样参数
     parser.add_argument("--temperature", type=float, default=0.8)
     parser.add_argument("--top_p", type=float, default=0.9)
     parser.add_argument("--top_k", type=int, default=0, help="top_k 截断，0 表示不启用")
-    parser.add_argument("--repetition_penalty", type=float, default=1.0,
+    parser.add_argument("--repetition_penalty", type=float, default=1.3,
                         help="重复惩罚系数，>1 压低已出现 token，推荐 1.1~1.3")
     # beam search 参数
     parser.add_argument("--use_beam_search", action="store_true", default=False,
@@ -541,7 +542,7 @@ def main():
         print(f"[inference_v2] 模式=采样, temperature={args.temperature}, top_p={args.top_p}, top_k={args.top_k}, repetition_penalty={args.repetition_penalty}")
 
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, trust_remote_code=True)
-    model = load_model(config_path, args.model_dir, device)
+    model = load_model_with_path(config_path, args.model_path, device)
 
     print("\n===== Prompt =====")
     print(args.prompt)

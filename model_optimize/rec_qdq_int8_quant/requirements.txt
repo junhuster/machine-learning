@@ -1,0 +1,8 @@
+pytorch-quantization>=2.1.2   # NVIDIA QDQ 量化库
+tensorrt>=8.6.0               # TensorRT
+pycuda>=2022.1                # CUDA Python 绑定
+torch>=1.13.0
+numpy>=1.22.0
+pyyaml>=6.0
+scikit-learn>=1.1.0
+onnx>=1.13.0

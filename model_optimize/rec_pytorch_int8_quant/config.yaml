@@ -1,0 +1,56 @@
+# ============================================================
+# rec_int8_quant 全局配置
+# ============================================================
+
+# ---------- 数据 ----------
+data:
+  num_train_samples: 50000
+  num_val_samples:   10000
+  num_sparse_fields: 10        # 稀疏特征域数量
+  sparse_vocab_size: 10000     # 每个域的词表大小
+  emb_dim: 16                  # Embedding 维度
+  num_dense_features: 13       # 连续特征数量
+  batch_size: 512
+  num_workers: 2
+
+# ---------- 模型 ----------
+model:
+  emb_dim: 16
+  num_sparse_fields: 10
+  num_dense_features: 13
+  num_experts: 3               # MMOE Expert 数量
+  expert_hidden_dims: [256, 128, 64]
+  gate_hidden_dim: 64
+  tower_hidden_dims: [64, 32]
+  num_tasks: 2                 # CTR + CVR
+  dropout: 0.1
+  use_bn: true                 # BatchNorm
+
+# ---------- 训练 ----------
+train:
+  epochs: 5
+  lr: 0.001
+  weight_decay: 1.0e-5
+  seed: 42
+  checkpoint_path: "checkpoints/best_model.pt"
+
+# ---------- 量化搜索 ----------
+quantize:
+  # 单层 AUC 下降阈值：超过此值则列为敏感层
+  single_layer_auc_drop_threshold: 0.002
+  # 分组验证 AUC 下降阈值
+  group_auc_drop_threshold: 0.003
+  # 最终全量验证 AUC 下降阈值
+  final_auc_drop_threshold: 0.005
+  # calibration 样本数
+  calibration_samples: 2000
+  # 量化结果保存路径
+  quantized_model_path: "checkpoints/quantized_model.pt"
+  # 量化配置报告路径
+  report_path: "checkpoints/quant_report.json"
+
+# ---------- 日志 ----------
+logging:
+  level: "INFO"          # DEBUG / INFO / WARNING / ERROR
+  format: "%(asctime)s [%(levelname)s] %(name)s - %(message)s"
+  log_file: "logs/run.log"

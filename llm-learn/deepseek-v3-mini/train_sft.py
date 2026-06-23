@@ -34,7 +34,7 @@ from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 
 from model import ModelArgs, Transformer
-from inference import generate_chat, _find_latest_checkpoint, _ckpt_step
+from inference import generate_chat, _find_latest_checkpoint, _ckpt_step,_ckpt_sft_step
 from dataset import SFTDataset, collate_sft
 
 
@@ -44,8 +44,8 @@ from dataset import SFTDataset, collate_sft
 
 DEFAULTS = dict(
     # 数据
-    data_path="./data/sft.jsonl",
-    max_seq_len=512,
+    data_path="/home/ubuntu/work/data/llm-data/train_data/zh/monkey/sft_data/BelleGroup_sft.jsonl",
+    max_seq_len=256,
 
     # 模型配置
     config_path="./config_mini.json",
@@ -54,17 +54,17 @@ DEFAULTS = dict(
     tokenizer="deepseek-ai/DeepSeek-V3",
 
     # 预训练权重目录（用于初始化，若为空则随机初始化）
-    pretrain_ckpt_dir="./checkpoints",
+    pretrain_ckpt="/home/ubuntu/work/data/llm-data/pretrained_model/deepseek-v3-mini/32G/ckpt_step00906000.pt",
 
     # SFT Checkpoint保存目录
-    model_dir="./checkpoints_sft",
-    save_steps=500,
+    model_dir="/home/ubuntu/work/data/llm-data/pretrained_model/deepseek-v3-mini/32G/",
+    save_steps=200,
     max_ckpts=2,
 
     # 训练
     num_epochs=1,
     batch_size=8,
-    grad_accum_steps=1,                 # 梯度累积步数；1=不累积，>1=累积N步后更新一次参数
+    grad_accum_steps=4,                 # 梯度累积步数；1=不累积，>1=累积N步后更新一次参数
     lr=1e-4,                            # SFT通常比预训练lr小
     lr_min=1e-6,
     weight_decay=0.01,
@@ -72,7 +72,7 @@ DEFAULTS = dict(
 
     # 日志
     log_steps=100,
-    log_dir="./logs_sft",
+    log_dir="/home/ubuntu/work/logs/deepseek-v3-mini/",
     gen_max_tokens=100,
     gen_temperature=0.7,
 )
@@ -115,7 +115,7 @@ def setup_logger(log_dir: str) -> logging.Logger:
 # ===========================================================================
 
 def ckpt_filename(step: int) -> str:
-    return f"ckpt_step{step:08d}.pt"
+    return f"ckpt_sft_step{step:08d}.pt"
 
 
 def save_checkpoint(
@@ -145,7 +145,7 @@ def save_checkpoint(
     )
     logger.info(f"Checkpoint已保存: {path}")
 
-    ckpts = sorted(Path(model_dir).glob("ckpt_step*.pt"), key=_ckpt_step)
+    ckpts = sorted(Path(model_dir).glob("ckpt_sft_step*.pt"), key=_ckpt_sft_step)
     while len(ckpts) > max_ckpts:
         old = ckpts.pop(0)
         old.unlink()
@@ -183,15 +183,15 @@ def load_checkpoint(
 
 
 def load_pretrain_weights(
-    pretrain_ckpt_dir: str,
+    pretrain_ckpt: str,
     model: Transformer,
     device: torch.device,
     logger: logging.Logger,
 ):
     """从预训练checkpoint加载模型权重（仅权重，不加载optimizer等状态）"""
-    ckpt_path = _find_latest_checkpoint(pretrain_ckpt_dir)
+    ckpt_path = pretrain_ckpt
     if ckpt_path is None:
-        logger.warning(f"未找到预训练checkpoint（{pretrain_ckpt_dir}），使用随机初始化权重。")
+        logger.warning(f"未找到预训练checkpoint（{pretrain_ckpt}），使用随机初始化权重。")
         return
     logger.info(f"加载预训练权重: {ckpt_path}")
     ckpt = torch.load(ckpt_path, map_location=device)
@@ -220,7 +220,7 @@ def train(args):
     cfg["max_batch_size"] = args.batch_size
 
     model_args = ModelArgs(**cfg)
-    model = Transformer(model_args).to(device=device, dtype=torch.float16)
+    model = Transformer(model_args).to(device=device) #fix, 不要指定dtype, 因为混合精度的原因
 
     param_count = sum(p.numel() for p in model.parameters())
     logger.info(f"模型参数量: {param_count / 1e6:.2f}M")
@@ -275,6 +275,7 @@ def train(args):
         load_pretrain_weights(args.pretrain_ckpt_dir, model, device, logger)
         start_step, start_epoch = 0, 0
 
+    start_step = 0 # 原start_step是预训练的，和sft无关
     # ---- 训练循环 ----
     global_step = start_step
     run_start_time = time.time()
@@ -342,12 +343,13 @@ def train(args):
                     avg_step_time = step_time_accum / steps_this_run
                     eta_minutes = avg_step_time * (total_steps - global_step) / 60.0
                     current_lr = scheduler.get_last_lr()[0]
-
+                    exe_time = (time.time() - run_start_time) / 60.0
                     logger.info(
                         f"epoch={epoch + 1}/{args.num_epochs} | "
                         f"step={global_step}/{total_steps} | "
                         f"loss={accum_loss:.4f} | "
                         f"lr={current_lr:.2e} | "
+                        f"ExeTm={exe_time:.1f} ｜"
                         f"ETA={eta_minutes:.1f}min"
                     )
 

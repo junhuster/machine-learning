@@ -122,21 +122,24 @@ class TextGenerator:
         with torch.no_grad():  # 禁用梯度计算，提升效率
             with self.ctx:  # 进入自动混合精度的上下文（如果是 GPU 并使用 float16 时）
                 for k in range(num_samples):  # 循环生成指定数量的样本
-                    y = self.model.generate(x, max_new_tokens=max_new_tokens, temperature=temperature, top_k=top_k)  # 生成文本
+                    y = self.model.generate(x, self.tokenizer.eos_token_id, max_new_tokens=max_new_tokens, temperature=temperature, top_k=top_k)  # 生成文本
                     generated_texts.append(self.tokenizer.decode(y[0].tolist()))  # 解码生成的 token 序列为可读文本
         
         return generated_texts  # 返回生成的文本样本
     
-predict_type = "sft"
+predict_type = "pretrain"
 if __name__ == "__main__":
     if predict_type == "pretrain":
         print("------------------- Pretrain Sample ------------------- \n")
 
         pretrain_prompt_datas = [
-            '<|im_start|>你好啊',
-            '<|im_start|>iphone 14',
+            '你好呀',
+            "中国的首都是哪里？",
+            "刘备和关羽什么关系？",
+            "宋徽宗怎么样?",
+            "应天门在哪里？"
         ]
-        generator = TextGenerator(checkpoint='/home/ubuntu/work/data/llm-data/pretrained_model/llama2/model/8G/release/llama2_pretrain_0.2b_32G.pth')  # 初始化生成器
+        generator = TextGenerator(checkpoint='/home/ubuntu/work/data/llm-data/pretrained_model/llama2/model/32G/llama2_pretrain_0.2b_32G.pth')  # 初始化生成器
         for i in range(len(pretrain_prompt_datas)):
             samples = generator.pretrain_sample(start=pretrain_prompt_datas[i], num_samples=1, max_new_tokens=120, temperature=0.75)
             print(f"\ninput text{i+1}:\n{pretrain_prompt_datas[i]}")

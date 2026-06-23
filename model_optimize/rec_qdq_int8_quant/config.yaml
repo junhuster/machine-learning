@@ -1,0 +1,79 @@
+# ============================================================
+# rec_qdq_int8_quant 全局配置
+# QDQ 方案：pytorch_quantization -> ONNX(QDQ) -> TensorRT INT8
+# ============================================================
+
+# ---------- 数据 ----------
+data:
+  num_train_samples: 50000
+  num_val_samples:   10000
+  num_sparse_fields: 10
+  sparse_vocab_size: 10000
+  emb_dim: 16
+  num_dense_features: 13
+  batch_size: 512
+  num_workers: 2
+
+# ---------- 模型 ----------
+model:
+  emb_dim: 16
+  num_sparse_fields: 10
+  num_dense_features: 13
+  num_experts: 3
+  expert_hidden_dims: [256, 128, 64]
+  gate_hidden_dim: 64
+  tower_hidden_dims: [64, 32]
+  num_tasks: 2
+  dropout: 0.1
+  use_bn: true
+
+# ---------- 训练 ----------
+train:
+  epochs: 5
+  lr: 0.001
+  weight_decay: 1.0e-5
+  seed: 42
+  checkpoint_path: "checkpoints/best_model.pt"
+
+# ---------- 导出 ----------
+export:
+  onnx_fp32_path:   "checkpoints/model_fp32.onnx"  # 无量化节点的 FP32 ONNX
+  onnx_qdq_path:    "checkpoints/model_qdq.onnx"   # 含 QDQ 节点的量化 ONNX
+  opset: 13
+
+# ---------- 量化 ----------
+quantize:
+  # calibration
+  calibration_samples: 2000
+  # percentile 搜索范围（histogram 方法）
+  percentile_left:  99.9
+  percentile_mid:   99.99
+  percentile_right: 99.999
+  # 若已知最优 percentile，直接填入跳过搜索；null 表示自动搜索
+  best_percentile: null
+
+  # 量化搜索阈值
+  single_layer_auc_drop_threshold: 0.002
+  group_auc_drop_threshold:        0.003
+  final_auc_drop_threshold:        0.005
+
+  # 量化搜索策略配置文件（可选，null 表示全自动搜索）
+  quant_conf: null
+
+  # 报告保存路径
+  report_path: "checkpoints/quant_report.json"
+
+# ---------- TensorRT ----------
+tensorrt:
+  engine_path:      "checkpoints/model_int8.trt"
+  max_batch_size:   512
+  workspace_mb:     1024
+  # 是否在 build engine 后立即做性能测试
+  benchmark:        true
+  benchmark_iters:  100
+
+# ---------- 日志 ----------
+logging:
+  level: "INFO"
+  format: "%(asctime)s [%(levelname)s] %(name)s - %(message)s"
+  log_file: "logs/run.log"

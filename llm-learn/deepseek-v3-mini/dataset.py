@@ -94,7 +94,7 @@ class SFTDataset(Dataset):
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.padding = 0
-
+        self.end_id = self.tokenizer.convert_tokens_to_ids("<｜end▁of▁sentence｜>")
         # 扫描文件，记录每条有效行的字节起始偏移
         self._offsets = []
         with open(data_path, "rb") as f:
@@ -107,33 +107,25 @@ class SFTDataset(Dataset):
         return self._total_lines
 
     def generate_loss_mask(self, input_ids):
-        """
-        生成loss mask，0表示不计算损失，1表示计算损失。
-        只对assistant回复部分（<|im_start|>assistant\n 到 eos_token 之间）标记为1。
-        """
         mask = [0] * len(input_ids)
-        a_sequence = self.tokenizer("<|im_start|>assistant\n")["input_ids"]
-        a_length = len(a_sequence)
+        # deepseek 格式
+        assistant_id = self.tokenizer.convert_tokens_to_ids("<｜Assistant｜>")
+        
         n = len(input_ids)
         i = 0
 
-        while i <= n - a_length:
-            # 检查当前位置是否匹配 <|im_start|>assistant\n
-            match = all(input_ids[i + k] == a_sequence[k] for k in range(a_length))
-            if match:
-                # 从子序列结束位置开始，找第一个eos_token_id
+        while i < n:
+            if input_ids[i] == assistant_id:
+                # 从 assistant_id 后一位开始找结束符
                 j = None
-                for idx in range(i + a_length, n):
-                    if input_ids[idx] == self.tokenizer.eos_token_id:
+                for idx in range(i + 1, n):
+                    if input_ids[idx] == self.end_id:
                         j = idx
                         break
                 if j is not None:
-                    start = i + a_length
-                    end = j  # 包含eos
-                    for pos in range(start, end + 1):
-                        if pos < len(mask):
-                            mask[pos] = 1
-                i += a_length
+                    for pos in range(i + 1, j + 1):
+                        mask[pos] = 1
+                i += 1
             else:
                 i += 1
 
@@ -148,13 +140,18 @@ class SFTDataset(Dataset):
         text = self.tokenizer.apply_chat_template(
             sample, tokenize=False, add_generation_prompt=False
         )
-        input_id = self.tokenizer(text).data["input_ids"][: self.max_length]
+        
+        oinput_id = self.tokenizer(text).data["input_ids"]
+        if len(oinput_id) > self.max_length:
+            input_id = oinput_id[: self.max_length - 1]
+            input_id.append(self.end_id)
+        else:
+            input_id = oinput_id[: self.max_length]
         text_len = len(input_id)
 
         padding_len = self.max_length - text_len
         input_id = input_id + [self.padding] * padding_len
         loss_mask = self.generate_loss_mask(input_id)
-
         input_id = np.array(input_id)
         X = np.array(input_id[:-1]).astype(np.int64)
         Y = np.array(input_id[1:]).astype(np.int64)

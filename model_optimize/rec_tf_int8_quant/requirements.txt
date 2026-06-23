@@ -1,0 +1,10 @@
+tensorflow>=2.10.0
+tf2onnx>=1.14.0
+onnx>=1.13.0
+onnxruntime>=1.15.0
+numpy>=1.22.0
+pyyaml>=6.0
+scikit-learn>=1.1.0
+# TensorRT 相关（GPU 服务器上安装）
+# tensorrt>=8.6.0
+# pycuda>=2022.1

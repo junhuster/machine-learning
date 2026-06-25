@@ -1,3 +1,4 @@
+##TODO 训练词表改用llama2的
 """
 inference_v2.py — DeepSeek-Mini推理脚本（增强版）
 
@@ -75,6 +76,7 @@ inference_v2.py — DeepSeek-Mini推理脚本（增强版）
 import argparse
 import json
 import os
+import time
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -498,24 +500,31 @@ def generate_chat(
 # ---------------------------------------------------------------------------
 # CLI 入口
 # ---------------------------------------------------------------------------
-
+pretrain_prompt_datas = [
+    '你好呀',
+    "中国的首都是哪里？",
+    "刘备和关羽什么关系？",
+    "宋徽宗怎么样?",
+    "应天门在哪里？",
+    "介绍下人工智能"
+]
 def main():
     parser = argparse.ArgumentParser(description="DeepSeek-Mini文本生成（增强版）")
     parser.add_argument("--model_dir", type=str, default="/home/ubuntu/work/data/llm-data/pretrained_model/deepseek-v3-mini/32G/release/")
-    parser.add_argument("--model_path", type=str, default="/home/ubuntu/work/data/llm-data/pretrained_model/deepseek-v3-mini/32G/release/deepseek-v3-mini_400M.pt")    
+    parser.add_argument("--model_path", type=str, default="/home/ubuntu/work/data/llm-data/pretrained_model/deepseek-v3-mini/32G/release/deepseek-v3-mini_400M_sft.pt")    
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--tokenizer", type=str, default="deepseek-ai/DeepSeek-V3")
     parser.add_argument("--prompt", type=str, default="中国的首都是")
     parser.add_argument("--chat", action="store_true", help="使用 chat 模式")
-    parser.add_argument("--max_new_tokens", type=int, default=200)
+    parser.add_argument("--max_new_tokens", type=int, default=50)
     # 普通采样参数
-    parser.add_argument("--temperature", type=float, default=0.8)
+    parser.add_argument("--temperature", type=float, default=0.9)
     parser.add_argument("--top_p", type=float, default=0.9)
     parser.add_argument("--top_k", type=int, default=0, help="top_k 截断，0 表示不启用")
-    parser.add_argument("--repetition_penalty", type=float, default=1.3,
+    parser.add_argument("--repetition_penalty", type=float, default=1.1,
                         help="重复惩罚系数，>1 压低已出现 token，推荐 1.1~1.3")
     # beam search 参数
-    parser.add_argument("--use_beam_search", action="store_true", default=False,
+    parser.add_argument("--use_beam_search", action="store_true", default=True,
                         help="启用 beam search（默认关闭）")
     parser.add_argument("--num_beams", type=int, default=4, help="beam 数量")
 
@@ -534,39 +543,44 @@ def main():
 
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"找不到config文件: {config_path}")
-
-    print(f"[inference_v2] config={config_path}")
-    if args.use_beam_search:
-        print(f"[inference_v2] 模式=beam search, num_beams={args.num_beams}")
-    else:
-        print(f"[inference_v2] 模式=采样, temperature={args.temperature}, top_p={args.top_p}, top_k={args.top_k}, repetition_penalty={args.repetition_penalty}")
-
+    model_file_name = Path(args.model_path).name    
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, trust_remote_code=True)
     model = load_model_with_path(config_path, args.model_path, device)
-
-    print("\n===== Prompt =====")
-    print(args.prompt)
-    print("\n===== Generated =====")
+    num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    if args.use_beam_search:
+        print(f"\nmodel file:{model_file_name} param_num:{num_params / 1e6:.3f} 模式=beam search, num_beams={args.num_beams}")
+    else:
+        print(f"\nmodel file:{model_file_name} param_num:{num_params / 1e6:.3f} 模式=采样, temperature={args.temperature}, top_p={args.top_p}, top_k={args.top_k}, repetition_penalty={args.repetition_penalty}")
 
     if args.chat:
-        messages = [{"role": "user", "content": args.prompt}]
-        result = generate_chat(
-            model=model, tokenizer=tokenizer, messages=messages,
-            max_new_tokens=args.max_new_tokens,
-            temperature=args.temperature, top_p=args.top_p,
-            top_k=args.top_k, repetition_penalty=args.repetition_penalty,
-            use_beam_search=args.use_beam_search, num_beams=args.num_beams,
-            device=device,
-        )
+        for i in range(len(pretrain_prompt_datas)):
+            start = time.time()
+            messages = [{"role": "user", "content": args.prompt}]
+            result = generate_chat(
+                model=model,
+                tokenizer=tokenizer,
+                messages=messages,
+                max_new_tokens=args.max_new_tokens,
+                temperature=args.temperature,
+                top_p=args.top_p,
+                device=device,
+            )
+            elaps = time.time() - start
+            print(f"\nQA: {pretrain_prompt_datas[i]} => infer_cost: {elaps:.3f} sec\nAI answer: {result}\n")
     else:
-        result = generate_with_options(
-            model=model, tokenizer=tokenizer, prompt=args.prompt,
-            max_new_tokens=args.max_new_tokens,
-            temperature=args.temperature, top_p=args.top_p,
-            top_k=args.top_k, repetition_penalty=args.repetition_penalty,
-            use_beam_search=args.use_beam_search, num_beams=args.num_beams,
-            device=device,
-        )
+        for i in range(len(pretrain_prompt_datas)):
+            start = time.time()
+            result = generate(
+                model=model,
+                tokenizer=tokenizer,
+                prompt=pretrain_prompt_datas[i],
+                max_new_tokens=args.max_new_tokens,
+                temperature=args.temperature,
+                top_p=args.top_p,
+                device=device,
+            )
+            elaps = time.time() - start
+            print(f"\nQA: {pretrain_prompt_datas[i]} => infer_cost: {elaps:.3f} sec\nAI answer: {result}\n")
 
     print(result)
 

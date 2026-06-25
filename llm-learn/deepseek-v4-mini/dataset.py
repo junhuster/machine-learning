@@ -1,5 +1,5 @@
 """
-dataset.py — Llama4-Mini数据集类
+dataset.py — DeepSeek-Mini数据集类
 
 包含：
   - PretrainDataset: 预训练数据集，每行 {"text": "..."}
@@ -22,7 +22,7 @@ from torch.utils.data import Dataset
 class PretrainDataset(Dataset):
     """
     预训练数据集，读取JSONL格式文件。
-    每行格式：{"text": "语料..."}
+    每行格式：{"text": "中文语料..."}
 
     内存高效实现：
     - __init__ 阶段只扫描文件，记录每行的字节偏移量（offsets），不加载文本内容
@@ -34,8 +34,7 @@ class PretrainDataset(Dataset):
         self.path = path
         self.tokenizer = tokenizer
         self.max_seq_len = max_seq_len
-        # llama4 tokenizer 没有 pad_token，用 eos_token 代替
-        self.pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
+        self.pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
 
         # 扫描文件，记录每条有效行的字节起始偏移
         self.offsets = []
@@ -94,41 +93,35 @@ class SFTDataset(Dataset):
         self.data_path = data_path
         self.tokenizer = tokenizer
         self.max_length = max_length
-        # llama4 tokenizer 没有 pad_token，用 eos_token_id 填充
-        self.padding = tokenizer.eos_token_id if tokenizer.pad_token_id is None else tokenizer.pad_token_id
+        self.padding = 0
 
         # 扫描文件，记录每条有效行的字节起始偏移
-        # 注意：与 PretrainDataset 不同，此处不跳过空行（空行会被 json.loads 报错，
-        # 交由 __getitem__ 在运行时暴露问题），先记录所有行的起始位置
         self._offsets = []
         with open(data_path, "rb") as f:
             self._offsets.append(0)
             while f.readline():
-                # readline() 读完一行后，f.tell() 正好指向下一行起始位置
                 self._offsets.append(f.tell())
-        # 最后一个 offset 指向文件末尾（哨兵值），实际行数比 offsets 少 1
         self._total_lines = len(self._offsets) - 1
 
     def __len__(self):
         return self._total_lines
 
     def generate_loss_mask(self, input_ids):
-        # 生成 loss mask, 0 表示不计算损失, 1 表示计算损失
+        """
+        生成loss mask，0表示不计算损失，1表示计算损失。
+        只对assistant回复部分（<|im_start|>assistant\n 到 eos_token 之间）标记为1。
+        """
         mask = [0] * len(input_ids)
-        a_sequence = self.tokenizer("<|im_start|>assistant\n")['input_ids']  # <|im_start|>assistant\n
+        a_sequence = self.tokenizer("<|im_start|>assistant\n")["input_ids"]
         a_length = len(a_sequence)
         n = len(input_ids)
         i = 0
-        
+
         while i <= n - a_length:
-            # 检查当前位置是否匹配目标子序列
-            match = True
-            for k in range(a_length):
-                if input_ids[i + k] != a_sequence[k]:
-                    match = False
-                    break
+            # 检查当前位置是否匹配 <|im_start|>assistant\n
+            match = all(input_ids[i + k] == a_sequence[k] for k in range(a_length))
             if match:
-                # 从子序列结束的位置开始查找第一个 4 (eos_token_id)
+                # 从子序列结束位置开始，找第一个eos_token_id
                 j = None
                 for idx in range(i + a_length, n):
                     if input_ids[idx] == self.tokenizer.eos_token_id:
@@ -136,16 +129,14 @@ class SFTDataset(Dataset):
                         break
                 if j is not None:
                     start = i + a_length
-                    end = j  # 结束位置设为j（包含4）
-                    # 标记区间为1（包括start到end）
-                    if start <= end:
-                        for pos in range(start, end + 1):
-                            if pos < len(mask):
-                                mask[pos] = 1
-                # 跳过当前子序列，避免重叠匹配
+                    end = j  # 包含eos
+                    for pos in range(start, end + 1):
+                        if pos < len(mask):
+                            mask[pos] = 1
                 i += a_length
             else:
                 i += 1
+
         return mask
 
     def __getitem__(self, index: int):
@@ -157,7 +148,6 @@ class SFTDataset(Dataset):
         text = self.tokenizer.apply_chat_template(
             sample, tokenize=False, add_generation_prompt=False
         )
-
         input_id = self.tokenizer(text).data["input_ids"][: self.max_length]
         input_id[-1] = self.tokenizer.eos_token_id
         text_len = len(input_id)
@@ -167,11 +157,8 @@ class SFTDataset(Dataset):
         loss_mask = self.generate_loss_mask(input_id)
 
         input_id = np.array(input_id)
-        # 语言模型的标准输入/目标错位：X 是输入序列（去掉末位），Y 是目标序列（去掉首位）
-        # 这样 Y[t] 就是模型在看到 X[0:t+1] 之后需要预测的下一个 token
         X = np.array(input_id[:-1]).astype(np.int64)
         Y = np.array(input_id[1:]).astype(np.int64)
-        # loss_mask 同样去掉首位（与 Y 对齐），padding 位置已在 generate_loss_mask 中标记为 0
         loss_mask = np.array(loss_mask[1:]).astype(np.int64)
 
         return (

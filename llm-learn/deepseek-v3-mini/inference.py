@@ -116,7 +116,6 @@ def load_model_with_path(
 
     if model_path is not None:
         print(f"[inference] 加载checkpoint: {model_path}")
-        ckpt = torch.load(model_path, map_location=device, weights_only=True)
         model.load_state_dict(ckpt["model_state_dict"], strict=False)
     else:
         print("[inference] 未找到checkpoint，使用随机初始化权重")
@@ -297,6 +296,8 @@ def main():
     parser = argparse.ArgumentParser(description="DeepSeek-Mini文本生成")
     parser.add_argument("--model_dir", type=str, default="/home/ubuntu/work/data/llm-data/pretrained_model/deepseek-v3-mini/32G/",
                         help="checkpoint目录（含ckpt_step*.pt和config_mini.json）")
+    parser.add_argument("--model_path", type=str, default="/home/ubuntu/work/data/llm-data/pretrained_model/deepseek-v3-mini/32G/release/deepseek-v3-mini_400M_sft.pt",
+                        help="checkpoint目录（含ckpt_step*.pt和config_mini.json）")
     parser.add_argument("--config", type=str, default=None,
                         help="config JSON路径（默认：model_dir/config_mini.json或脚本同级目录）")
     parser.add_argument("--tokenizer", type=str, default="deepseek-ai/DeepSeek-V3",
@@ -328,19 +329,23 @@ def main():
     print(f"[inference] config={config_path}")
 
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, trust_remote_code=True)
-    model = load_model(config_path, args.model_dir, device)
+    model = load_model_with_path(config_path, args.model_dir, device)
 
     if args.chat:
-        messages = [{"role": "user", "content": args.prompt}]
-        result = generate_chat(
-            model=model,
-            tokenizer=tokenizer,
-            messages=messages,
-            max_new_tokens=args.max_new_tokens,
-            temperature=args.temperature,
-            top_p=args.top_p,
-            device=device,
-        )
+        for i in range(len(pretrain_prompt_datas)):
+            start = time.time()
+            messages = [{"role": "user", "content": args.prompt}]
+            result = generate_chat(
+                model=model,
+                tokenizer=tokenizer,
+                messages=messages,
+                max_new_tokens=args.max_new_tokens,
+                temperature=args.temperature,
+                top_p=args.top_p,
+                device=device,
+            )
+            elaps = time.time() - start
+            print(f"\nQA: {pretrain_prompt_datas[i]} => infer_cost: {elaps:.3f} sec\nAI answer: {result}\n")
     else:
         for i in range(len(pretrain_prompt_datas)):
             start = time.time()

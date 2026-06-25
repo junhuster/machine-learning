@@ -44,12 +44,11 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
-from transformers.models.llama4.configuration_llama4 import Llama4TextConfig
-from transformers.models.llama4.modeling_llama4 import Llama4ForCausalLM
+from configuration_llama4 import Llama4TextConfig
+from modeling_llama4 import Llama4ForCausalLM
 
 from inference import _find_latest_checkpoint, _ckpt_step, generate
 from dataset import PretrainDataset, collate_pretrain
-
 
 # ===========================================================================
 # 训练超参数默认值（可通过命令行参数覆盖）
@@ -57,17 +56,17 @@ from dataset import PretrainDataset, collate_pretrain
 
 DEFAULTS = dict(
     # 数据
-    data_path="./data/train.jsonl",
+    data_path="/home/ubuntu/work/data/llm-data/train_data/zh/monkey/pretrain_data/monkey_pretrain_310M.jsonl",
     max_seq_len=256,                    # 训练序列长度
 
     # 模型配置
     config_path="./config_mini.json",
 
     # 分词器
-    tokenizer="meta-llama/Llama-4-Scout-17B-16E",
+    tokenizer="/home/ubuntu/work/data/llm-data/pretrained_model/llama2/tokenizer/",
 
     # Checkpoint
-    model_dir="./checkpoints",
+    model_dir="/home/ubuntu/work/data/llm-data/pretrained_model/llama4/32G/p_model/",
     save_steps=500,                     # 每 N 步保存一次
     max_ckpts=2,                        # 最多保留 N 个最新 checkpoint
 
@@ -82,7 +81,7 @@ DEFAULTS = dict(
 
     # 日志
     log_steps=100,                      # 每 N 步打印一次日志
-    log_dir="./logs",
+    log_dir="/home/ubuntu/work/logs/llama4/",
     start_text="人工智能的发展历史",    # 周期性推理用的提示词
     gen_max_tokens=50,                  # 日志推理最多生成 token 数
     gen_temperature=0.8,                # 日志推理采样温度
@@ -114,7 +113,7 @@ def setup_logger(log_dir: str) -> logging.Logger:
     )
 
     # 每天轮转，后缀精确到天（如 train.log.2025-05-28）
-    log_file = os.path.join(log_dir, "train.log")
+    log_file = os.path.join(log_dir, "train-32G.log")
     file_handler = TimedRotatingFileHandler(
         log_file,
         when="midnight",
@@ -125,11 +124,7 @@ def setup_logger(log_dir: str) -> logging.Logger:
     file_handler.suffix = "%Y-%m-%d"
     file_handler.setFormatter(fmt)
 
-    stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(fmt)
-
     logger.addHandler(file_handler)
-    logger.addHandler(stream_handler)
     return logger
 
 
@@ -245,7 +240,7 @@ def train(args):
 
     text_config = Llama4TextConfig(**cfg)
     model = Llama4ForCausalLM(text_config)
-    model = model.to(device=device, dtype=torch.float16)
+    model = model.to(device=device)
 
     param_count = sum(p.numel() for p in model.parameters())
     logger.info(f"模型参数量: {param_count / 1e6:.2f}M")
@@ -365,19 +360,20 @@ def train(args):
                 global_step += 1
                 step_time_accum += time.time() - step_t0
                 steps_this_run += 1
-
+                exe_tm = (time.time() - run_start_time) / 60.0
                 # ---- 打印日志 ----
                 if global_step % args.log_steps == 0:
                     avg_step_time = step_time_accum / steps_this_run
                     remaining_steps = total_steps - global_step
                     eta_minutes = avg_step_time * remaining_steps / 60.0
                     current_lr = scheduler.get_last_lr()[0]
-
+                    exe_time = (time.time() - run_start_time) / 60.0
                     logger.info(
                         f"epoch={epoch + 1}/{args.num_epochs} | "
                         f"step={global_step}/{total_steps} | "
                         f"loss={accum_loss:.4f} | "
                         f"lr={current_lr:.2e} | "
+                        f"ExeTime={exe_time:.1f}min |"
                         f"ETA={eta_minutes:.1f}min"
                     )
 

@@ -71,8 +71,8 @@ from typing import Optional
 
 import torch
 from transformers import AutoTokenizer
-from transformers.models.llama4.configuration_llama4 import Llama4TextConfig
-from transformers.models.llama4.modeling_llama4 import Llama4ForCausalLM
+from configuration_llama4 import Llama4TextConfig
+from modeling_llama4 import Llama4ForCausalLM
 
 
 # ---------------------------------------------------------------------------
@@ -313,7 +313,7 @@ def main():
                         help="checkpoint 目录（含 ckpt_step*.pt）")
     parser.add_argument("--config", type=str, default=None,
                         help="config JSON 路径（默认：脚本同级目录下的 config_mini.json）")
-    parser.add_argument("--tokenizer", type=str, default="meta-llama/Llama-4-Scout-17B-16E",
+    parser.add_argument("--tokenizer", type=str, default="/home/ubuntu/work/data/llm-data/pretrained_model/llama2/tokenizer/",
                         help="HuggingFace tokenizer 名称或本地路径")
     parser.add_argument("--prompt", type=str, default="你好，请介绍一下人工智能",
                         help="生成提示词")

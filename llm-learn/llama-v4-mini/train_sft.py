@@ -32,8 +32,8 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
-from transformers.models.llama4.configuration_llama4 import Llama4TextConfig
-from transformers.models.llama4.modeling_llama4 import Llama4ForCausalLM
+from configuration_llama4 import Llama4TextConfig
+from modeling_llama4 import Llama4ForCausalLM
 
 from inference import _find_latest_checkpoint, _ckpt_step, generate_chat
 from dataset import SFTDataset, collate_sft
@@ -45,20 +45,20 @@ from dataset import SFTDataset, collate_sft
 
 DEFAULTS = dict(
     # 数据
-    data_path="./data/sft.jsonl",
+    data_path="/home/ubuntu/work/data/llm-data/train_data/zh/monkey/sft_data/BelleGroup_sft_small.jsonl",
     max_seq_len=512,
 
     # 模型配置
     config_path="./config_mini.json",
 
     # 分词器
-    tokenizer="meta-llama/Llama-4-Scout-17B-16E",
+    tokenizer="/home/ubuntu/work/data/llm-data/pretrained_model/llama2/tokenizer/",
 
     # 预训练权重目录（用于初始化，若为空则随机初始化）
-    pretrain_ckpt_dir="./checkpoints",
+    pretrain_ckpt_dir="/home/ubuntu/work/data/llm-data/pretrained_model/llama4/32G/p_model/",
 
     # SFT Checkpoint 保存目录
-    model_dir="./checkpoints_sft",
+    model_dir="/home/ubuntu/work/data/llm-data/pretrained_model/llama4/32G/sft_model/",
     save_steps=500,
     max_ckpts=2,
 
@@ -73,7 +73,7 @@ DEFAULTS = dict(
 
     # 日志
     log_steps=100,
-    log_dir="./logs_sft",
+    log_dir="/home/ubuntu/work/logs/llama4/",
     gen_max_tokens=100,
     gen_temperature=0.7,
 )
@@ -107,11 +107,7 @@ def setup_logger(log_dir: str) -> logging.Logger:
     file_handler.suffix = "%Y-%m-%d"
     file_handler.setFormatter(fmt)
 
-    stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(fmt)
-
     logger.addHandler(file_handler)
-    logger.addHandler(stream_handler)
     return logger
 
 
@@ -238,7 +234,7 @@ def train(args):
 
     text_config = Llama4TextConfig(**cfg)
     model = Llama4ForCausalLM(text_config)
-    model = model.to(device=device, dtype=torch.float16)
+    model = model.to(device=device)
 
     param_count = sum(p.numel() for p in model.parameters())
     logger.info(f"模型参数量: {param_count / 1e6:.2f}M")
@@ -355,7 +351,7 @@ def train(args):
                 global_step += 1
                 step_time_accum += time.time() - step_t0
                 steps_this_run += 1
-
+                exe_tm = (time.time() - run_start_time) / 60.0
                 # ---- 打印日志 ----
                 if global_step % args.log_steps == 0:
                     avg_step_time = step_time_accum / steps_this_run
@@ -367,6 +363,7 @@ def train(args):
                         f"step={global_step}/{total_steps} | "
                         f"loss={accum_loss:.4f} | "
                         f"lr={current_lr:.2e} | "
+                        f"ExeTm={exe_tm:.1f}min |"
                         f"ETA={eta_minutes:.1f}min"
                     )
 

@@ -1,5 +1,5 @@
 {
-    "vocab_size": 202048,
+    "vocab_size": 10000,
     "hidden_size": 512,
     "intermediate_size": 1024,
     "intermediate_size_mlp": 2048,

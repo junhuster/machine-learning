@@ -137,11 +137,12 @@ if __name__ == "__main__":
             "中国的首都是哪里？",
             "刘备和关羽什么关系？",
             "宋徽宗怎么样?",
-            "应天门在哪里？"
+            "应天门在哪里？",
+            "人工智能"
         ]
         generator = TextGenerator(checkpoint='/home/ubuntu/work/data/llm-data/pretrained_model/llama2/model/32G/llama2_pretrain_0.2b_32G.pth')  # 初始化生成器
         for i in range(len(pretrain_prompt_datas)):
-            samples = generator.pretrain_sample(start=pretrain_prompt_datas[i], num_samples=1, max_new_tokens=120, temperature=0.75)
+            samples = generator.pretrain_sample(start=pretrain_prompt_datas[i], num_samples=1, max_new_tokens=120, temperature=1.0)
             print(f"\ninput text{i+1}:\n{pretrain_prompt_datas[i]}")
             print(f"\nllama2 model output text {i+1}:\n{pretrain_prompt_datas[i]}{samples[0]}\n{'-'*20}")  # 打印生成的样本并用分隔线分割
         

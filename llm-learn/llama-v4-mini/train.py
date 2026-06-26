@@ -56,7 +56,7 @@ from dataset import PretrainDataset, collate_pretrain
 
 DEFAULTS = dict(
     # 数据
-    data_path="/home/ubuntu/work/data/llm-data/train_data/zh/monkey/pretrain_data/monkey_pretrain_310M.jsonl",
+    data_path="/home/ubuntu/work/data/llm-data/train_data/zh/monkey/pretrain_data/monkey_pretrain.jsonl",
     max_seq_len=256,                    # 训练序列长度
 
     # 模型配置
@@ -67,12 +67,12 @@ DEFAULTS = dict(
 
     # Checkpoint
     model_dir="/home/ubuntu/work/data/llm-data/pretrained_model/llama4/32G/p_model/",
-    save_steps=500,                     # 每 N 步保存一次
+    save_steps=1000,                     # 每 N 步保存一次
     max_ckpts=2,                        # 最多保留 N 个最新 checkpoint
 
     # 训练
     num_epochs=1,
-    batch_size=4,
+    batch_size=24,
     grad_accum_steps=1,                 # 梯度累积步数；1=不累积，>1=累积N步后更新一次参数
     lr=3e-4,                            # 余弦退火起始 lr
     lr_min=1e-5,                        # 余弦退火最低 lr
@@ -80,7 +80,7 @@ DEFAULTS = dict(
     grad_clip=1.0,                      # 梯度裁剪阈值
 
     # 日志
-    log_steps=100,                      # 每 N 步打印一次日志
+    log_steps=200,                      # 每 N 步打印一次日志
     log_dir="/home/ubuntu/work/logs/llama4/",
     start_text="人工智能的发展历史",    # 周期性推理用的提示词
     gen_max_tokens=50,                  # 日志推理最多生成 token 数

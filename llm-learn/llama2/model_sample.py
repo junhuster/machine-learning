@@ -1,4 +1,5 @@
 import os
+import time
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # 完全禁用 TF 日志
 import pickle
@@ -65,9 +66,9 @@ class TextGenerator:
     def sft_sample(self, 
                start="Hello!",  # 生成文本的起始提示词，可以是任意字符串
                num_samples=3,  # 生成样本的数量，默认生成 3 个样本
-               max_new_tokens=256,  # 每个样本生成的最大 token 数，默认最多生成 256 个 token
-               temperature=0.7,  # 控制生成的随机性，1.0 为标准，值越大越随机
-               top_k=300):  # 保留概率最高的 top_k 个 token，限制生成时的选择范围
+               max_new_tokens=50,  # 每个样本生成的最大 token 数，默认最多生成 256 个 token
+               temperature=1.0,  # 控制生成的随机性，1.0 为标准，值越大越随机
+               top_k=3):  # 保留概率最高的 top_k 个 token，限制生成时的选择范围
         """
         根据给定的起始文本生成样本。
         
@@ -95,9 +96,9 @@ class TextGenerator:
     def pretrain_sample(self, 
                start="Hello!",  # 生成文本的起始提示词，可以是任意字符串
                num_samples=3,  # 生成样本的数量，默认生成 3 个样本
-               max_new_tokens=256,  # 每个样本生成的最大 token 数，默认最多生成 256 个 token
-               temperature=0.7,  # 控制生成的随机性，1.0 为标准，值越大越随机
-               top_k=300):  # 保留概率最高的 top_k 个 token，限制生成时的选择范围
+               max_new_tokens=50,  # 每个样本生成的最大 token 数，默认最多生成 256 个 token
+               temperature=0.8,  # 控制生成的随机性，1.0 为标准，值越大越随机
+               top_k=3):  # 保留概率最高的 top_k 个 token，限制生成时的选择范围
         """
         根据给定的起始文本生成样本。
         
@@ -127,7 +128,7 @@ class TextGenerator:
         
         return generated_texts  # 返回生成的文本样本
     
-predict_type = "pretrain"
+predict_type = "sft"
 if __name__ == "__main__":
     if predict_type == "pretrain":
         print("------------------- Pretrain Sample ------------------- \n")
@@ -142,9 +143,10 @@ if __name__ == "__main__":
         ]
         generator = TextGenerator(checkpoint='/home/ubuntu/work/data/llm-data/pretrained_model/llama2/model/32G/llama2_pretrain_0.2b_32G.pth')  # 初始化生成器
         for i in range(len(pretrain_prompt_datas)):
-            samples = generator.pretrain_sample(start=pretrain_prompt_datas[i], num_samples=1, max_new_tokens=120, temperature=1.0)
-            print(f"\ninput text{i+1}:\n{pretrain_prompt_datas[i]}")
-            print(f"\nllama2 model output text {i+1}:\n{pretrain_prompt_datas[i]}{samples[0]}\n{'-'*20}")  # 打印生成的样本并用分隔线分割
+            start = time.time()
+            samples = generator.pretrain_sample(start=pretrain_prompt_datas[i], num_samples=3, max_new_tokens=50, temperature=0.8)
+            elaps = time.time() - start
+            print(f"\nQA: {pretrain_prompt_datas[i]} => infer_cost: {elaps:.3f} sec\nAI answer: {samples[0]}\n")
         
     elif predict_type == "sft":
         #print("\n ------------------- SFT Sample ------------------- \n")
@@ -157,8 +159,9 @@ if __name__ == "__main__":
         ]
         generator = TextGenerator(checkpoint='/home/ubuntu/work/data/llm-data/pretrained_model/llama2/model/32G/llama2_sft_0.2b_P32G_S5G_step_223999.pth')  # 初始化生成器
         for i in range(len(sft_prompt_datas)):
-            samples = generator.sft_sample(start=sft_prompt_datas[i], num_samples=1, max_new_tokens=100, temperature=0.6)
-            print(f"\nQuestion {i+1}:\n{sft_prompt_datas[i]}")
-            print(f"\nAI answer {i+1}: {samples[0]}\n{'-'*20}")  # 打印生成的样本并用分隔线分割
+            start = time.time()
+            samples = generator.sft_sample(start=sft_prompt_datas[i], num_samples=3, max_new_tokens=50, temperature=1.0)
+            elaps = time.time() - start
+            print(f"\nQA: {sft_prompt_datas[i]} => infer_cost: {elaps:.3f} sec\nAI answer: {samples[0]}\n")
     else:
         print(f"unkown predict type")

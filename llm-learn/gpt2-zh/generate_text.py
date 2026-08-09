@@ -1,12 +1,13 @@
 import logging as log
 import sys
+import time
 import torch
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent/'util'))
 import logger
 #logger.init_logger("/home/ubuntu/work/logs/gpt2-zh-pre-train.log")
 
-def generate_text_simple(model, idx, max_new_tokens, context_size, temperature=1.0, top_k=None):
+def generate_text_simple(model, idx, max_new_tokens, context_size, temperature=1.0, top_k=3):
     """
     Generate text using the model with temperature and top-k sampling.
 
@@ -63,7 +64,7 @@ def generate_text_simple(model, idx, max_new_tokens, context_size, temperature=1
     return idx
 
 
-def generate_and_print_sample(model, tokenizer, device, start_context, temperature=1.0, top_k=None, max_new_tokens=50, index=0):
+def generate_and_print_sample(model, tokenizer, device, start_context, temperature=1.0, top_k=3, max_new_tokens=50, index=0):
     """
     Generate and print a sample from the model.
 
@@ -76,6 +77,7 @@ def generate_and_print_sample(model, tokenizer, device, start_context, temperatu
         top_k: Top-k sampling parameter (default: None)
         max_new_tokens: Maximum number of new tokens to generate (default: 50)
     """
+    start = time.time()
     model.eval()
     context_size = model.pos_emb.weight.shape[0]
     encoded = text_to_token_ids(start_context, tokenizer).to(device)
@@ -89,9 +91,9 @@ def generate_and_print_sample(model, tokenizer, device, start_context, temperatu
             top_k=top_k
         )
         decoded_text = token_ids_to_text(token_ids, tokenizer)
-    log.info(f"output text:{decoded_text}")
-    print(f"\ninput text {index}: {start_context}\n")
-    print(f"\noutput_text {index}: {decoded_text}\n")
+
+    elaps = time.time() - start
+    print(f"\nQA: {start_context} => infer_cost: {elaps:.3f} sec\nAI answer: {decoded_text}\n")
     model.train()
 
 def text_to_token_ids(text, tokenizer):

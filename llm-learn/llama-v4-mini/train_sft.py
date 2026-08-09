@@ -45,7 +45,7 @@ from dataset import SFTDataset, collate_sft
 
 DEFAULTS = dict(
     # 数据
-    data_path="/home/ubuntu/work/data/llm-data/train_data/zh/monkey/sft_data/BelleGroup_sft_small.jsonl",
+    data_path="/home/ubuntu/work/data/llm-data/train_data/zh/monkey/sft_data/BelleGroup_sft.jsonl",
     max_seq_len=512,
 
     # 模型配置
@@ -64,7 +64,7 @@ DEFAULTS = dict(
 
     # 训练
     num_epochs=1,
-    batch_size=4,
+    batch_size=12,
     grad_accum_steps=1,                 # 梯度累积步数；1=不累积，>1=累积N步后更新一次参数
     lr=1e-4,                            # SFT 通常比预训练 lr 小
     lr_min=1e-6,
@@ -296,7 +296,7 @@ def train(args):
     steps_this_run = 0
     accum_loss = 0.0                # 当前累积周期内的累计 loss（用于日志展示）
 
-    sample_messages = [{"role": "user", "content": "你好，请介绍一下你自己。"}]
+    sample_messages = [{"role": "user", "content": "你好，请介绍一下人工智能。"}]
 
     model.train()
 

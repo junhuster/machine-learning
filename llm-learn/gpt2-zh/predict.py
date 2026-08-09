@@ -22,8 +22,12 @@ def load_model(model_path):
 # ===================== 主程序 =====================
 if __name__ == "__main__":
     start_list = [
-        "你好啊",
-        "我看见地上有100元钱"
+        '你好呀',
+        "中国的首都是哪里？",
+        "刘备和关羽什么关系？",
+        "宋徽宗怎么样?",
+        "应天门在哪里？",
+        "介绍下人工智能"
     ]
     start_context = "我是一个中文语言模型"
     tokenizer = AutoTokenizer.from_pretrained('/home/ubuntu/work/data/llm-data/pretrained_model/llama2/tokenizer/')

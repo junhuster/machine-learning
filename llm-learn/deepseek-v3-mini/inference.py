@@ -78,7 +78,7 @@ def load_model(
     with open(config_path) as f:
         cfg = json.load(f)
     args = ModelArgs(**cfg)
-
+    args.max_seq_len = 257
     ## fix，训练是混合精度训练的，推理加载时，这里不要指定fp16
     model = Transformer(args).to(device=device)
 
@@ -98,6 +98,40 @@ def load_model_with_path(
     model_path: str,
     device: torch.device,
 ) -> Transformer:
+    with open(config_path) as f:
+        cfg = json.load(f)
+    args = ModelArgs(**cfg)
+
+    model = Transformer(args).to(device=device)
+
+    if model_path is not None:
+        print(f"[inference] 加载checkpoint: {model_path}")
+        try:
+            ckpt = torch.load(model_path, map_location=device, weights_only=True)
+            print(f"ckpt keys: {list(ckpt.keys())}")
+            msd = ckpt["model_state_dict"]
+            print(f"model_state_dict 权重数量: {len(msd)}")
+            some_key = list(msd.keys())[0]
+            print(f"示例权重key: {some_key}")
+
+            # strict=True，直接检测key匹配问题
+            model.load_state_dict(msd, strict=True)
+            print("✅ load_state_dict strict=True 成功，无key不匹配")
+
+        except Exception as e:
+            print(f"❌ load_state_dict异常：{e}")
+            raise
+    else:
+        print("[inference] 未找到checkpoint，使用随机初始化权重")
+
+    model.eval()
+    return model
+
+def load_model_with_path0(
+    config_path: str,
+    model_path: str,
+    device: torch.device,
+) -> Transformer:
     """
     从config文件 + 最新checkpoint加载模型，返回eval模式的Transformer。
 
@@ -111,12 +145,17 @@ def load_model_with_path(
     with open(config_path) as f:
         cfg = json.load(f)
     args = ModelArgs(**cfg)
-
+    args.max_seq_len = 257
+    args.max_batch_size = 8
     model = Transformer(args).to(device=device)
 
     if model_path is not None:
         print(f"[inference] 加载checkpoint: {model_path}")
-        model.load_state_dict(ckpt["model_state_dict"], strict=False)
+        try:
+            ckpt = torch.load(model_path, map_location=device)
+            model.load_state_dict(ckpt["model_state_dict"], strict=False)
+        except Exception as e:
+            raise RuntimeError(f"加载checkpoint失败 {model_path}") from e
     else:
         print("[inference] 未找到checkpoint，使用随机初始化权重")
 
@@ -329,9 +368,13 @@ def main():
     print(f"[inference] config={config_path}")
 
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, trust_remote_code=True)
-    model = load_model_with_path(config_path, args.model_dir, device)
-
+    model = load_model_with_path(config_path, args.model_path, device)
+    infer_params = sum(p.numel() for p in model.parameters())
+    print(f"推理使用总参数量(M)：{infer_params / 1e6:.2f} M")
     if args.chat:
+        messages = [{"role":"user","content":"你好，请介绍一下你自己。"}]
+        out = generate_chat(model, tokenizer, messages, max_new_tokens=100, temperature=0.7, top_p=0.9, device=device)
+        print(f"zjtest out:{out}")
         for i in range(len(pretrain_prompt_datas)):
             start = time.time()
             messages = [{"role": "user", "content": args.prompt}]
@@ -362,6 +405,8 @@ def main():
             print(f"\nQA: {pretrain_prompt_datas[i]} => infer_cost: {elaps:.3f} sec\nAI answer: {result}\n")
 
     print(result)
+
+from inference import generate_chat
 
 
 if __name__ == "__main__":

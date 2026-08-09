@@ -66,6 +66,7 @@ inference.py — Llama4-Mini 独立推理/文本生成脚本
 import argparse
 import json
 import os
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -309,20 +310,20 @@ def generate_chat(
 
 def main():
     parser = argparse.ArgumentParser(description="Llama4-Mini 文本生成")
-    parser.add_argument("--model_dir", type=str, default="./checkpoints",
+    parser.add_argument("--model_dir", type=str, default="/home/ubuntu/work/data/llm-data/pretrained_model/llama4/32G/sft_model/",
                         help="checkpoint 目录（含 ckpt_step*.pt）")
     parser.add_argument("--config", type=str, default=None,
                         help="config JSON 路径（默认：脚本同级目录下的 config_mini.json）")
     parser.add_argument("--tokenizer", type=str, default="/home/ubuntu/work/data/llm-data/pretrained_model/llama2/tokenizer/",
                         help="HuggingFace tokenizer 名称或本地路径")
-    parser.add_argument("--prompt", type=str, default="你好，请介绍一下人工智能",
+    parser.add_argument("--prompt", type=str, default="人工智能",
                         help="生成提示词")
     parser.add_argument("--chat", action="store_true",
                         help="使用 chat 模式（SFT 模型），将 prompt 作为 user 消息")
-    parser.add_argument("--max_new_tokens", type=int, default=200)
-    parser.add_argument("--temperature", type=float, default=0.8)
+    parser.add_argument("--max_new_tokens", type=int, default=50)
+    parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--top_p", type=float, default=0.9)
-    parser.add_argument("--top_k", type=int, default=0,
+    parser.add_argument("--top_k", type=int, default=3,
                         help="top_k 截断，0 表示不启用")
     parser.add_argument("--repetition_penalty", type=float, default=1.0,
                         help="重复惩罚系数，>1 压低已出现 token，推荐 1.1~1.3")
@@ -359,21 +360,33 @@ def main():
     print(args.prompt)
     print("\n===== Generated =====")
 
+    pretrain_prompt_datas = [
+        '你好呀',
+        "中国的首都是哪里？",
+        "刘备和关羽什么关系？",
+        "宋徽宗怎么样?",
+        "应天门在哪里？",
+        "介绍下人工智能"
+    ]
     if args.chat:
-        messages = [{"role": "user", "content": args.prompt}]
-        result = generate_chat(
-            model=model,
-            tokenizer=tokenizer,
-            messages=messages,
-            max_new_tokens=args.max_new_tokens,
-            temperature=args.temperature,
-            top_p=args.top_p,
-            top_k=args.top_k,
-            repetition_penalty=args.repetition_penalty,
-            use_beam_search=args.use_beam_search,
-            num_beams=args.num_beams,
-            device=device,
-        )
+        for i in range(len(pretrain_prompt_datas)):
+            start = time.time()
+            messages = [{"role": "user", "content": pretrain_prompt_datas[i]}]
+            result = generate_chat(
+                model=model,
+                tokenizer=tokenizer,
+                messages=messages,
+                max_new_tokens=args.max_new_tokens,
+                temperature=args.temperature,
+                top_p=args.top_p,
+                top_k=args.top_k,
+                repetition_penalty=args.repetition_penalty,
+                use_beam_search=args.use_beam_search,
+                num_beams=args.num_beams,
+                device=device,
+            )
+            elaps = time.time() - start
+            print(f"\nQA: {pretrain_prompt_datas[i]} => infer_cost: {elaps:.3f} sec\nAI answer: {result}\n")
     else:
         result = generate(
             model=model,

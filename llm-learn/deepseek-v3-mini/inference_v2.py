@@ -85,7 +85,7 @@ from transformers import AutoTokenizer
 
 from model import ModelArgs, Transformer
 from inference import _ckpt_step, _find_latest_checkpoint, load_model_with_path
-
+from contextlib import nullcontext
 
 # ---------------------------------------------------------------------------
 # Sampling（增强版）
@@ -229,7 +229,9 @@ def generate(
     prompt_tensor = torch.tensor(input_ids, dtype=torch.long, device=device).unsqueeze(0)
 
     model.reset_kv_cache()
-    logits = model(prompt_tensor, start_pos=0, use_cache=True)  # (1, vocab_size)
+    ctx = nullcontext() if device.type == "cpu" else torch.amp.autocast(device_type=device.type, dtype=torch.float16)
+    with ctx:
+        logits = model(prompt_tensor, start_pos=0, use_cache=True)  # (1, vocab_size)
 
     generated_ids: List[int] = []
     eos_id = tokenizer.eos_token_id
@@ -501,7 +503,7 @@ def generate_chat(
 # CLI 入口
 # ---------------------------------------------------------------------------
 pretrain_prompt_datas = [
-    '你好呀',
+    '你好,请介绍下你自己',
     "中国的首都是哪里？",
     "刘备和关羽什么关系？",
     "宋徽宗怎么样?",
@@ -511,20 +513,20 @@ pretrain_prompt_datas = [
 def main():
     parser = argparse.ArgumentParser(description="DeepSeek-Mini文本生成（增强版）")
     parser.add_argument("--model_dir", type=str, default="/home/ubuntu/work/data/llm-data/pretrained_model/deepseek-v3-mini/32G/release/")
-    parser.add_argument("--model_path", type=str, default="/home/ubuntu/work/data/llm-data/pretrained_model/deepseek-v3-mini/32G/release/deepseek-v3-mini_400M_sft.pt")    
+    parser.add_argument("--model_path", type=str, default="/home/ubuntu/work/data/llm-data/pretrained_model/deepseek-v3-mini/32G/ckpt_sft_step00100400.pt")    
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--tokenizer", type=str, default="deepseek-ai/DeepSeek-V3")
     parser.add_argument("--prompt", type=str, default="中国的首都是")
     parser.add_argument("--chat", action="store_true", help="使用 chat 模式")
     parser.add_argument("--max_new_tokens", type=int, default=50)
     # 普通采样参数
-    parser.add_argument("--temperature", type=float, default=0.9)
+    parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--top_p", type=float, default=0.9)
-    parser.add_argument("--top_k", type=int, default=0, help="top_k 截断，0 表示不启用")
+    parser.add_argument("--top_k", type=int, default=3, help="top_k 截断，0 表示不启用")
     parser.add_argument("--repetition_penalty", type=float, default=1.1,
                         help="重复惩罚系数，>1 压低已出现 token，推荐 1.1~1.3")
     # beam search 参数
-    parser.add_argument("--use_beam_search", action="store_true", default=True,
+    parser.add_argument("--use_beam_search", action="store_true", default=False,
                         help="启用 beam search（默认关闭）")
     parser.add_argument("--num_beams", type=int, default=4, help="beam 数量")
 
@@ -548,14 +550,15 @@ def main():
     model = load_model_with_path(config_path, args.model_path, device)
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     if args.use_beam_search:
-        print(f"\nmodel file:{model_file_name} param_num:{num_params / 1e6:.3f} 模式=beam search, num_beams={args.num_beams}")
+        print(f"\nmodel file:{model_file_name} param_num:{num_params / 1e6:.3f} M 模式=beam search, num_beams={args.num_beams}")
     else:
-        print(f"\nmodel file:{model_file_name} param_num:{num_params / 1e6:.3f} 模式=采样, temperature={args.temperature}, top_p={args.top_p}, top_k={args.top_k}, repetition_penalty={args.repetition_penalty}")
+        print(f"\nmodel file:{model_file_name} param_num:{num_params / 1e6:.3f} M 模式=采样, temperature={args.temperature}, top_p={args.top_p}, top_k={args.top_k}, repetition_penalty={args.repetition_penalty}")
 
     if args.chat:
+        print(f"use chat mode")
         for i in range(len(pretrain_prompt_datas)):
             start = time.time()
-            messages = [{"role": "user", "content": args.prompt}]
+            messages = [{"role": "user", "content": pretrain_prompt_datas[i]}]
             result = generate_chat(
                 model=model,
                 tokenizer=tokenizer,

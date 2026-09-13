@@ -1,0 +1,45 @@
+# ============================================================
+# OneTrans 模型配置文件
+# 字节跳动单Transformer精排模型: 用一个Transformer同时做
+# 特征交互 + 序列建模，替代 DIN(序列) + DCN(特征交叉) 的分离范式
+# ============================================================
+
+# ---------- 数据相关 ----------
+num_users: 10000          # 用户ID词表大小
+num_items: 5000           # 物品ID词表大小
+num_categories: 100       # 物品类目词表大小
+num_numeric: 20           # 数值特征个数
+history_len: 200          # 用户历史行为序列最大长度
+num_samples: 1000         # fake样本数量
+data_path: ./fake_data.pkl  # fake数据保存路径
+
+# ---------- 模型结构 ----------
+# 大幅调大模型使推理avg接近40ms（线上典型延迟），便于性能分析
+# T4算力强，小模型NN只有1~2ms，需要d_model=128 + ffn=1024 + 8层 + history=200
+embedding_dim: 128        # token维度（Transformer d_model）
+num_heads: 8               # 多头注意力头数（必须能整除embedding_dim，128/8=16）
+ffn_dim: 1024              # Transformer FFN中间层维度
+num_layers: 8              # Transformer Encoder层数
+dropout: 0.1               # dropout概率
+
+# ---------- 训练相关 ----------
+batch_size: 32            # 训练batch size（模型变大后调小防OOM）
+learning_rate: 0.001      # 学习率
+max_steps: 100            # 训练迭代次数（模型变大后调小避免训练过久）
+log_every: 10             # 每N次迭代打印一次日志
+save_path: ./onetrans_model.pt  # 模型保存路径
+seed: 42                  # 随机种子
+
+# ---------- 推理压测相关 ----------
+infer_batch_size: 128     # 推理时每个请求的batch大小（调大增加单请求计算量）
+target_qps: 100           # 目标QPS（请求数/秒，每个请求=一个batch）
+target_requests: 2000     # 压测总请求数（模型变大后调小避免压测过久），达到后停止
+warmup_requests: 30       # 预热请求数（不计入统计）
+
+# ---------- 性能分析相关（对照文档分析点） ----------
+enable_cpu_preprocess: true   # 模拟CPU侧特征拉取/预处理（制造GPU等CPU的场景）
+cpu_preprocess_ms: 5          # 模拟CPU预处理耗时(ms)，调大可放大CPU bottleneck
+enable_h2d_d2h: true          # 显式H2D/D2H数据搬运（nsys可观测Memcpy）
+enable_latency_breakdown: true # 推理端到端延迟拆解（各阶段占比输出）
+batch_sweep: false             # 推理batch sweep模式：测试[1,4,16,64,256]各batch延迟吞吐
+ncu_batch_size: 64             # ncu profiling专用小batch（比infer_batch_size小很多，加速ncu采集，kernel类型一样）

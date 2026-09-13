@@ -1,0 +1,44 @@
+# ============================================================
+# DCN + DIN 模型配置文件
+# 修改这里的参数即可控制模型结构、训练时长、压测强度
+# ============================================================
+
+# ---------- 数据相关 ----------
+num_users: 10000          # 用户ID词表大小
+num_items: 5000           # 物品ID词表大小
+num_categories: 100       # 物品类目词表大小
+num_numeric: 30           # 数值特征个数
+history_len: 500          # 用户历史行为序列最大长度（DIN注意力计算量随history线性增长）
+num_samples: 1000         # fake样本数量
+data_path: ./fake_data.pkl  # fake数据保存路径
+
+# ---------- 模型结构 ----------
+# DCN-DIN是浅层宽模型，小GEMM多，T4算力喂不饱，需要大幅放大才能到40ms
+# embedding_dim对GEMM计算量是平方级影响（K和N同时翻倍→4x）
+# DIN注意力MLP输入是4*embedding_dim，embedding翻倍→DIN计算量4x
+embedding_dim: 256        # 所有embedding的维度（128→256，GEMM计算量4x）
+num_cross_layers: 16      # DCN Cross网络层数（8→16，2x）
+cross_low_rank: 128       # DCNv2低秩分解的秩 r (r << d, d=256)
+deep_hidden: [4096, 2048, 1024, 512]  # Deep MLP隐藏层维度（加宽加深，第一层GEMM最关键）
+
+# ---------- 训练相关 ----------
+batch_size: 16            # 训练batch size（模型很大，调小防OOM）
+learning_rate: 0.001      # 学习率
+max_steps: 50             # 训练迭代次数（模型大，50步足够profiling）
+log_every: 10             # 每N次迭代打印一次日志
+save_path: ./dcn_din_model.pt  # 模型保存路径
+seed: 42                  # 随机种子
+
+# ---------- 推理压测相关 ----------
+infer_batch_size: 512     # 推理时每个请求的batch大小（256→512，单请求计算量2x，使avg达到~40ms）
+target_qps: 100           # 目标QPS（请求数/秒，每个请求=一个batch）
+target_requests: 1000     # 压测总请求数（模型大，调小避免压测过久），达到后停止
+warmup_requests: 20       # 预热请求数（不计入统计）
+
+# ---------- 性能分析相关（对照文档分析点） ----------
+enable_cpu_preprocess: true   # 模拟CPU侧特征拉取/预处理（制造GPU等CPU的场景）
+cpu_preprocess_ms: 5          # 模拟CPU预处理耗时(ms)，调大可放大CPU bottleneck
+enable_h2d_d2h: true          # 显式H2D/D2H数据搬运（nsys可观测Memcpy）
+enable_latency_breakdown: true # 推理端到端延迟拆解（各阶段占比输出）
+batch_sweep: false             # 推理batch sweep模式：测试[1,4,16,64,256]各batch延迟吞吐
+ncu_batch_size: 64             # ncu profiling专用小batch（比infer_batch_size小很多，加速ncu采集，kernel类型一样）

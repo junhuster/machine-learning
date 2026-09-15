@@ -1,13 +1,12 @@
 """
-PyTorch Profiler 性能分析脚本
-- 使用 torch.profiler 采集 CPU + CUDA 活动
-- 导出 TensorBoard trace 和 Chrome trace
-- 分析: 算子耗时、kernel耗时、内存占用、调用栈
+PyTorch Profiler 性能分析脚本 — 推理模式
+- 使用 torch.profiler 采集 CPU + CUDA 活动（推理 forward only）
+- 导出 Chrome trace，可用 Perfetto (https://ui.perfetto.dev/) 或 chrome://tracing 打开
+- 分析: 推理算子耗时、GPU kernel耗时、CPU/GPU时间分布、调用栈
 
 使用方法:
-  python profile_torch.py
-  # 查看TensorBoard:
-  tensorboard --logdir=./prof_log
+  python3 profile_torch.py
+  # 产出 trace_chrome.json，用 Perfetto 或 chrome://tracing 打开
 """
 import os
 import json
@@ -41,33 +40,38 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     _logger.info(f"[INFO] Device: {device}")
 
-    model = DCNDIN(config).to(device)
-    model.train()
-    optimizer = torch.optim.Adam(model.parameters(), lr=config['learning_rate'])
-    criterion = nn.BCEWithLogitsLoss()
-    batch_size = config['batch_size']
+    # 加载训练好的模型（推理模式）
+    save_path = config.get('save_path', './dcn_din_model.pt')
+    if os.path.exists(save_path):
+        ckpt = torch.load(save_path, map_location=device, weights_only=False)
+        model = DCNDIN(ckpt['config']).to(device)
+        model.load_state_dict(ckpt['model_state_dict'])
+        _logger.info(f"[INFO] Loaded trained model from {save_path}")
+    else:
+        _logger.warning(f"[WARN] Model file {save_path} not found, using fresh model")
+        model = DCNDIN(config).to(device)
 
-    # 预热
-    _logger.info("[INFO] Warmup 5 steps...")
-    for _ in range(5):
-        batch = generate_batch(config, batch_size, device)
-        label = torch.randint(0, 2, (batch_size,), device=device, dtype=torch.float32)
-        logits = model(**batch)
-        loss = criterion(logits, label)
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+    model.eval()
+    infer_batch_size = config.get('infer_batch_size', config.get('batch_size', 64))
+    _logger.info(f"[INFO] Inference batch size: {infer_batch_size}")
+
+    # 预热（推理 forward only）
+    _logger.info("[INFO] Warmup 5 steps (inference)...")
+    with torch.no_grad():
+        for _ in range(5):
+            batch = generate_batch(config, infer_batch_size, device)
+            _ = model(**batch)
     if device.type == 'cuda':
         torch.cuda.synchronize()
 
-    # Profiler 采集
+    # Profiler 采集（推理模式）
     # wait=1: 第1步不采集
     # warmup=1: 第2步预热
     # active=3: 第3-5步采集
     # repeat=1: 重复1轮
     chrome_path = os.path.join(os.path.dirname(__file__), 'trace_chrome.json')
 
-    _logger.info("[INFO] Profiling 5 steps (wait=1, warmup=1, active=3)...")
+    _logger.info("[INFO] Profiling 5 inference steps (wait=1, warmup=1, active=3)...")
     with torch.profiler.profile(
         activities=[
             torch.profiler.ProfilerActivity.CPU,
@@ -82,15 +86,11 @@ def main():
         with_stack=True,
         with_flops=True,
     ) as prof:
-        for _ in range(5):
-            batch = generate_batch(config, batch_size, device)
-            label = torch.randint(0, 2, (batch_size,), device=device, dtype=torch.float32)
-            logits = model(**batch)
-            loss = criterion(logits, label)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            prof.step()
+        with torch.no_grad():
+            for _ in range(5):
+                batch = generate_batch(config, infer_batch_size, device)
+                _ = model(**batch)
+                prof.step()
 
     if device.type == 'cuda':
         torch.cuda.synchronize()
@@ -130,7 +130,7 @@ def main():
         ))
 
     _logger.info(f"\n[DONE] Chrome trace: {chrome_path}")
-    _logger.info(f"[DONE] 用 Chrome 浏览器打开 chrome://tracing → Load → 选择 {chrome_path}")
+    _logger.info(f"[DONE] 用 Perfetto (https://ui.perfetto.dev/) 或 chrome://tracing 打开 → 选择 {chrome_path}")
 
 
 if __name__ == '__main__':

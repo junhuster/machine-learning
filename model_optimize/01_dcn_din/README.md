@@ -37,6 +37,14 @@ nsys profile --trace=cuda,nvtx,osrt -o nsys_train --force-overwrite true python3
 nsys profile --trace=cuda,nvtx,osrt -o nsys_infer --force-overwrite true python3 inference.py
 # 用 nsys-ui 打开 .nsys-rep 文件
 
+# ===== 6b. cupti-python 采集（Perfetto 直接打开，保留 CPU→GPU 调用链箭头） =====
+# nsys 转 Perfetto JSON 会丢调用链箭头；本方案进程内自己配对 correlation_id，箭头保得住
+pip install cupti-python            # 仅 Linux x86_64，不碰系统 CUDA
+python3 fields_probe.py             # 首次使用先跑：核对字段名（看 profile_cupti.log）
+python3 profile_cupti.py            # 产出 trace_cupti.json
+# 浏览器打开 https://ui.perfetto.dev → Open trace file → trace_cupti.json
+# 详细说明见 PROFILE_CUPTI.md（注意：不能与 nsys/torch.profiler 同时跑）
+
 # ===== 7. ncu Kernel级分析 =====
 # 推荐：speedoflight模式 + 跳过warmup + 只采30个kernel，几分钟内跑完
 ncu --set speedoflight --launch-skip 5 --launch-count 30 -o ncu_report --force-overwrite python3 profile_ncu.py
@@ -59,8 +67,12 @@ ncu --set speedoflight --launch-skip 5 --launch-count 30 -o ncu_report --force-o
 ├── benchmark_op.py      # 微基准：torch.utils.benchmark测各类算子+Roofline分析
 ├── profile_torch.py     # PyTorch Profiler 分析
 ├── profile_ncu.py       # Nsight Compute 专用短脚本（推理模式，加载训练好的模型跑推理）
+├── profile_cupti.py     # cupti-python 专用脚本（Perfetto 时间轴，带 CPU→GPU 调用链箭头）
+├── cuda_prof.py         # CUPTI 采集器（profile_cupti.py 调用，也可单独接入任意脚本）
+├── fields_probe.py      # cupti-python 字段名自检（首次使用 profile_cupti.py 前先跑一次）
 ├── requirements.txt     # Python依赖
 ├── README.md            # 本文档
+├── PROFILE_CUPTI.md     # cupti-python + Perfetto 使用指导（调用链原理/看什么/常见坑）
 │
 │ 【运行后自动生成的日志文件（所有脚本只写日志文件，不输出到控制台）】
 ├── fake_data.log        # fake数据生成日志
@@ -69,10 +81,12 @@ ncu --set speedoflight --launch-skip 5 --launch-count 30 -o ncu_report --force-o
 ├── benchmark.log        # 微基准日志（算子耗时/Roofline）
 ├── profile_torch.log    # torch.profiler日志
 ├── profile_ncu.log      # kernel分析短脚本日志
+├── profile_cupti.log    # cupti采集日志（fields_probe.py 字段自检也写这里）
 ├── fake_data.pkl        # fake训练数据（1000条）
 ├── model.pt             # 训练保存的模型文件
 ├── prof_log/            # torch.profiler的TensorBoard输出
 ├── trace_chrome.json    # torch.profiler的Chrome trace输出
+├── trace_cupti.json     # cupti采集的Chrome trace输出（Perfetto打开，带调用链箭头）
 ├── nsys_*.nsys-rep      # Nsight System采集报告
 └── ncu_*.ncu-rep        # Nsight Compute采集报告（ncu-ui打开）
 ```

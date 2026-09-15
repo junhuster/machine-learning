@@ -32,7 +32,7 @@ seed: 42                  # 随机种子
 # ---------- 推理压测相关 ----------
 infer_batch_size: 512     # 推理时每个请求的batch大小（256→512，单请求计算量2x，使avg达到~40ms）
 target_qps: 100           # 目标QPS（请求数/秒，每个请求=一个batch）
-target_requests: 1000     # 压测总请求数（模型大，调小避免压测过久），达到后停止
+target_requests: 100     # 压测总请求数（模型大，调小避免压测过久），达到后停止
 warmup_requests: 20       # 预热请求数（不计入统计）
 
 # ---------- 性能分析相关（对照文档分析点） ----------
@@ -42,3 +42,10 @@ enable_h2d_d2h: true          # 显式H2D/D2H数据搬运（nsys可观测Memcpy�
 enable_latency_breakdown: true # 推理端到端延迟拆解（各阶段占比输出）
 batch_sweep: false             # 推理batch sweep模式：测试[1,4,16,64,256]各batch延迟吞吐
 ncu_batch_size: 64             # ncu profiling专用小batch（比infer_batch_size小很多，加速ncu采集，kernel类型一样）
+nsys_capture_range: true      # nsys精准采集开关：true 时仅在正式压测段调用 cudaProfilerStart/Stop，
+                               # 配合 nsys --capture-range=cudaProfilerApi 用，报告只含推理段（不含模型加载/warmup）
+
+# ---------- cupti-python profiling（PROFILE_CUPTI.md） ----------
+cupti_batch_size: 64           # cupti 采集专用 batch（小batch控制JSON大小，kernel类型和大batch一样）
+cupti_steps: 5                 # 采集的推理step数
+cupti_warmup_steps: 3          # warmup步数（不采集）

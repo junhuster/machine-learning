@@ -161,6 +161,14 @@ def benchmark_fixed_qps(config, model, device):
             run_inference_step(model, batch_cpu, config, device)
     _logger.info("[INFO] Warmup done.")
 
+    # 精准采集范围（配合 nsys --capture-range=cudaProfilerApi 使用）：
+    # 仅在正式压测段开/关 CUDA profiler，报告只含推理部分，不含模型加载和 warmup。
+    # 平时（nsys_capture_range=false）不影响运行。
+    if device.type == 'cuda' and config.get('nsys_capture_range', False):
+        torch.cuda.synchronize()
+        torch.cuda.cudart().cudaProfilerStart()
+        _logger.info("[INFO] cudaProfilerStart() (nsys capture-range 开启)")
+
     # 正式压测
     _logger.info("=" * 60)
     _logger.info(f"[BENCH] Start: target_qps={target_qps}, total={target_requests}")
@@ -195,6 +203,12 @@ def benchmark_fixed_qps(config, model, device):
                     f"nn_lat={np.mean(nn_recent):>6.2f}ms  "
                     f"total_lat={np.mean(stage_times['total'][-1000:]):>6.2f}ms"
                 )
+
+    # 关闭精准采集（配合 nsys --capture-range=cudaProfilerApi）
+    if device.type == 'cuda' and config.get('nsys_capture_range', False):
+        torch.cuda.synchronize()
+        torch.cuda.cudart().cudaProfilerStop()
+        _logger.info("[INFO] cudaProfilerStop() (nsys capture-range 关闭)")
 
     # 结果统计
     total_time = time.time() - start

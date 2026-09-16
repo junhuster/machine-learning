@@ -1,0 +1,34 @@
+# ============================================================
+# 精排打分模型（RankModel）配置文件
+# 场景：一个用户 + N 个候选 item 打分（精排）
+# 本工程故意埋了两个性能坑，用于性能分析学习：
+#   坑1（launch overhead）：item_tower 内塞了大量微小算子
+#   坑2（user 特征冗余）：user_tower 在候选循环里重复计算 N 次
+# ============================================================
+
+# ---------- 数据相关 ----------
+num_users: 10000           # 用户数
+num_items: 100000          # 物品数（embedding 词表）
+hist_len: 50               # 用户历史行为序列长度（user tower 计算量来源）
+num_candidates: 32         # N：一个用户对应的候选 item 数（精排场景）
+num_samples: 2000          # fake 样本数量
+data_path: ./fake_data.pkl  # fake 数据保存路径
+
+# ---------- 模型结构 ----------
+emb_dim: 64                # user/item embedding 维度
+user_proj_dim: 128         # user 历史序列逐 token 投影后的维度
+user_hidden: [256, 128]    # user MLP 隐藏层（user 侧最终表示维度 = 128）
+item_proj_dim: 128         # item 投影维度
+n_small_ops: 30            # ★坑1：item_tower 内微小算子数量（每次 item 打分塞 30 个独立小 kernel，
+                           #   制造大量 launch overhead；调大更明显，但训练会变慢）
+
+# ---------- 训练相关 ----------
+learning_rate: 0.001
+max_steps: 30              # 训练步数（模型有大量小 kernel，跑太多会久）
+log_every: 5               # 每 N 步打印一次日志
+save_path: ./rank_model.pt  # 模型保存路径
+seed: 42
+
+# ---------- 性能分析相关 ----------
+ncu_candidates: 8          # ncu 采集专用小候选数（比 num_candidates 小，加速 ncu 采集，kernel 类型一样）
+nsys_infer_steps: 5        # nsys 采集专用推理步数（纯推理脚本 inference.py 用，报告很短不需要 --duration）

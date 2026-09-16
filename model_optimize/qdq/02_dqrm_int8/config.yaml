@@ -1,0 +1,64 @@
+# ============================================================
+# 任务2：DQRM 简化版（DLRM 结构）+ PyTorch 官方 torch.ao 量化
+#
+# 论文：DQRM: Deep Quantized Recommendation Models
+#       (Zhou et al., 2024, arXiv:2410.20046) —— Meta/Berkeley/Intel
+#       原文做 INT4 QAT + 分布式梯度压缩；这里做「结构 + QAT 思路」的简化复现，
+#       落点改为 INT8（T4 没有 INT4 推理加速，做 INT4 只能看精度不能看速度）。
+# ============================================================
+
+data:
+  num_dense: 128            # 稠密数值特征维度
+  num_sparse: 26            # 稀疏类别特征列数（对齐 Criteo 的 26 列）
+  sparse_vocab: 8000        # 每列的词表大小
+  num_samples: 80000
+  val_ratio: 0.2
+  calib_ratio: 0.1
+  seed: 42
+  data_path: outputs/fake_data.npz
+
+model:
+  # DLRM 结构：bottom MLP(稠密) + 稀疏 embedding 表 + 特征交互 + top MLP
+  # 刻意把 top MLP 放大 —— 它才是被 Q/DQ 量化的对象，也是 INT8 能加速的部分
+  emb_dim: 256
+  bottom_mlp: [1024, 512, 256]
+  top_mlp: [4096, 2048, 1024]
+  dropout: 0.1
+
+train:
+  batch_size: 512
+  lr: 0.001
+  epochs: 5
+  log_every: 50
+  seed: 42
+  save_path: outputs/model.pt
+
+quant:
+  # 只做训练后量化（PTQ）：用 torch.ao 的 MinMaxObserver 在校准集上求量化参数
+  # 注意：激活请用对称 int8。quint8 非对称在 torch 2.2 导出 ONNX 时会被插 Cast
+  #       且 zero_point=0 时数值出错（详见 ao_quant.py 顶部说明）。
+  act_dtype: qint8           # 激活：对称 per-tensor
+  act_qscheme: per_tensor_symmetric
+  w_dtype: qint8             # 权重：对称 per-tensor
+  w_qscheme: per_tensor_symmetric
+  calib_batches: 6           # 校准用多少 batch
+  calib_batch_size: 512
+  skip_sensitive: true       # 是否按敏感度分析结果跳过敏感层
+  sensitive_auc_drop: 0.002  # ΔAUC 阈值：超过则判为敏感层
+  sensitive_path: outputs/sensitive_layers.txt
+  report_path: outputs/sensitivity.csv
+  disable_list: []
+
+export:
+  onnx_path: outputs/model.onnx
+  quant_onnx_path: outputs/model_quant_qdq.onnx
+  opset: 17
+  min_batch: 1
+  opt_batch: 32
+  max_batch: 256
+
+bench:
+  batch_sizes: [1, 8, 32, 64, 128, 256]
+  warmup: 20
+  iters: 100
+  report_path: outputs/bench_report.md

@@ -1,0 +1,64 @@
+# ============================================================
+# 任务1：推荐场景 Transformer 精排模型 + Q/DQ 量化
+# ============================================================
+
+data:
+  num_users: 50000          # 用户 ID 词表
+  num_items: 20000          # 物品 ID 词表
+  num_categories: 2000      # 类目词表
+  num_dense: 64             # 数值特征维度
+  history_len: 200          # 行为序列长度（attention 计算量随它线性增长）
+  num_samples: 120000       # fake 样本总数（history 以 int32 存盘，控制 npz 体积）
+  val_ratio: 0.2            # 验证集比例
+  calib_ratio: 0.1          # 从「训练集」里再切出多少做量化校准集（PTQ 统计 amax 用）
+  seed: 42
+  data_path: outputs/fake_data.npz
+
+model:
+  # 规模刻意放大，保证 FP32 单请求耗时够高，量化才有意义
+  # （dense 部分才是被 Q/DQ 量化的对象；embedding 查表不会被量化）
+  embed_dim: 256
+  num_layers: 4
+  num_heads: 8
+  ffn_dim: 1024
+  dropout: 0.1
+  head_hidden: [1024, 512]
+
+train:
+  batch_size: 1024
+  lr: 0.001
+  epochs: 5
+  log_every: 50
+  seed: 42
+  save_path: outputs/model.pt
+
+export:
+  onnx_path: outputs/model.onnx
+  quant_onnx_path: outputs/model_quant_qdq.onnx
+  opset: 17
+  min_batch: 1
+  opt_batch: 32
+  max_batch: 256
+
+quant:
+  # backend: auto | pytorch_quantization | torch_fake
+  #   auto               -> 有 pytorch_quantization 就用它，否则用内置 fake-quant（两者都产出带 Q/DQ 的 ONNX）
+  #   pytorch_quantization -> 强制用 NVIDIA 工具（即 transformer-deploy 的底层）
+  #   torch_fake         -> 强制用内置实现（无需额外依赖，保证可跑）
+  backend: auto
+  calib_method: max         # max | percentile（percentile 用 99.99 分位，抗离群值）
+  calib_batches: 20
+  calib_batch_size: 512
+  skip_sensitive: true      # 是否按敏感度分析结果跳过敏感层
+  sensitive_auc_drop: 0.002 # ΔAUC 阈值：单独量化该层后 AUC 跌幅超过它 → 判为敏感层
+  sensitive_path: outputs/sensitive_layers.txt
+  report_path: outputs/sensitivity.csv
+  disable_list: []          # 手工补充的「禁用量化」层名（精确匹配）
+  # 若某版 TensorRT 对 Q 与 DQ 之间的 Cast 报错，改成 true（需要 onnxsim）
+  simplify: false
+
+bench:
+  batch_sizes: [1, 8, 32, 64, 128, 256]
+  warmup: 20
+  iters: 100
+  report_path: outputs/bench_report.md

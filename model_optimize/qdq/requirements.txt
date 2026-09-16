@@ -1,0 +1,17 @@
+# 依赖说明
+#
+# 注意：TensorRT 与 pytorch-quantization 通常不能直接用 pip 从 PyPI 装，
+#       需按 NVIDIA 官方方式安装（见各自 README 的「环境要求」）。
+#       这里只列通用依赖，供 pip install -r requirements.txt 使用。
+
+torch>=2.0.0
+numpy>=1.24
+pyyaml>=6.0
+onnx>=1.15.0
+onnxruntime>=1.16.0
+tqdm>=4.65
+
+# 任务2 用（torch.ao 自带，无需额外包）
+# 任务1 额外需要（二选一，按 README 指引安装）：
+#   pytorch-quantization   # NVIDIA TensorRT Quantization Toolkit
+#   transformer-deploy     # HF 封装（内部依赖上面的 pytorch-quantization）
